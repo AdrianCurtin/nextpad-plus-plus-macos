@@ -1419,7 +1419,7 @@
 				<Item id="90034" name="整個詞"/>
 				<Item id="90035" name="整個詞"/>
 				<Item id="90036" name="裹"/>
-				<Item id="90037" name="特點"/>
+				<Item id="90037" name="字元"/>
 				<Item id="90038" name="HTML 名稱"/>
 				<Item id="90039" name="HTML 十進位"/>
 				<Item id="90040" name="HTML 十六進位"/>
@@ -1631,11 +1631,11 @@
 				<Item id="90259" name="正在搜尋…目前有 %ld 個匹配項"/>
 				<Item id="90260" name="%@（%ld匹配%@）"/>
 				<Item id="90261" name="模糊搜尋"/>
-				<Item id="90266" name="計數：%ld 場比賽。"/>
-				<Item id="90267" name="全部替換：%ld 個事件已替換為 %@。"/>
+				<Item id="90266" name="計數：%ld 個相符。"/>
+				<Item id="90267" name="全部替換：已取代 %ld 個符合項目 %@。"/>
 				<Item id="90268" name="在開啟的檔案中取代：已取代 %ld 個符合項目。"/>
 				<Item id="90269" name="Find in Files: %ld hit(s) in %ld file(s)."/>
-				<Item id="90270" name="在文件中尋找：0 次點擊。"/>
+				<Item id="90270" name="在文件中尋找：0 個相符。"/>
 				<Item id="90271" name="將目錄中所有出現的「%@」替換為「%@」：&#10;%@&#10;&#10;此操作無法撤銷。"/>
 				<Item id="90272" name="Replace in Files: %ld replacement(s) in %ld file(s)."/>
 				<Item id="90273" name="首先打開項目面板。"/>

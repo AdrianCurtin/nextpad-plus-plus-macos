@@ -1927,6 +1927,8 @@ You can re-activate this dialog in Preferences later."/>
 				<Item id="90467" name="Quit Nextpad++"/>
 				<Item id="90468" name="Save Current Recorded Macro…"/>
 				<Item id="90469" name="Trim Trailing Space and Save"/>
+				<Item id="90470" name="All plugin buttons are hidden, so the Plugins capsule is not shown in the toolbar."/>
+				<Item id="90471" name="not loaded"/>
 			</MacStrings>
 		</Dialog>
 		<MessageBox>

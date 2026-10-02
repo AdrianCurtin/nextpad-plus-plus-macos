@@ -1491,7 +1491,7 @@ Translation note:
 				<Item id="90034" name="整个词"/>
 				<Item id="90035" name="整个词"/>
 				<Item id="90036" name="包裹"/>
-				<Item id="90037" name="人物"/>
+				<Item id="90037" name="字符"/>
 				<Item id="90038" name="HTML 名称"/>
 				<Item id="90039" name="HTML 十进制"/>
 				<Item id="90040" name="HTML 十六进制"/>
@@ -1703,11 +1703,11 @@ Translation note:
 				<Item id="90259" name="正在搜索…目前有 %ld 个匹配项"/>
 				<Item id="90260" name="%@（%ld匹配%@）"/>
 				<Item id="90261" name="模糊搜索"/>
-				<Item id="90266" name="计数：%ld 场比赛。"/>
-				<Item id="90267" name="全部替换：%ld 个事件已替换为 %@。"/>
+				<Item id="90266" name="计数：%ld 次匹配。"/>
+				<Item id="90267" name="全部替换：已替换 %ld 个匹配项 %@。"/>
 				<Item id="90268" name="在打开的文件中替换：已替换 %ld 个匹配项。"/>
 				<Item id="90269" name="Find in Files: %ld hit(s) in %ld file(s)."/>
-				<Item id="90270" name="在文件中查找：0 次点击。"/>
+				<Item id="90270" name="在文件中查找：0 次匹配。"/>
 				<Item id="90271" name="将目录中所有出现的“%@”替换为“%@”：&#10;%@&#10;&#10;此操作无法撤消。"/>
 				<Item id="90272" name="Replace in Files: %ld replacement(s) in %ld file(s)."/>
 				<Item id="90273" name="首先打开项目面板。"/>
