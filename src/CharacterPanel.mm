@@ -309,8 +309,7 @@ static NSString *const kColXHex = @"xhex";  // 5  HTML Hexadecimal
     _tableView.backgroundColor  = bg;
 
     // Drive table appearance (incl. header) from theme brightness
-    _tableView.appearance = [NSAppearance appearanceNamed:
-        [NppThemeManager isDarkColor:bg] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    _tableView.appearance = [NppThemeManager appearanceForBackground:bg];
 
     [_tableView reloadData];
 }
