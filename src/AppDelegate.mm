@@ -16,6 +16,69 @@
 // Files opened from a folder beyond this count trigger a confirmation.
 static const NSUInteger kFolderOpenConfirmThreshold = 20;
 
+// ── Unclean-exit detection ──────────────────────────────────────────────────
+// running.marker exists from launch until -applicationWillTerminate:. Finding
+// it at launch means the previous run crashed, was force quit, or lost power,
+// unless the process it names is still running (a second instance, e.g. the
+// binary started from Terminal while the app is open).
+//
+// Keys: "launched" (this run's start), "pid", and "recoverSince" while a
+// recovery is pending. recoverSince carries the EARLIEST unclean start forward
+// until the recovery step has run, so a run that crashes during launch does not
+// hide the earlier run's backups behind its own, later, start time.
+static NSString *NppRunMarkerPath(void) {
+    return NppConfigSubpath(@"running.marker");
+}
+
+static BOOL    sOwnsRunMarker;   // NO when another live instance owns the marker
+static NSDate *sLaunchDate;
+
+static void NppWriteRunMarker(NSDate *recoverSince) {
+    NSMutableDictionary *marker = [@{ @"launched": sLaunchDate, @"pid": @(getpid()) } mutableCopy];
+    if (recoverSince) marker[@"recoverSince"] = recoverSince;
+    [marker writeToFile:NppRunMarkerPath() atomically:YES];
+}
+
+/// YES when `pid` is a live process of this app other than the caller.
+static BOOL NppIsOtherLiveInstance(pid_t pid) {
+    if (pid <= 0 || pid == getpid() || kill(pid, 0) != 0) return NO;
+    NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+    NSString *mine = [NSBundle mainBundle].bundleIdentifier;
+    return app && mine && [app.bundleIdentifier isEqualToString:mine];
+}
+
+/// Record this launch. Returns the start of the earliest run whose backups have
+/// not been recovered after an unclean exit, or nil after a clean exit (or on
+/// first launch, or when another instance is live and owns the marker).
+static NSDate *NppMarkLaunch(void) {
+    NSString *path = NppRunMarkerPath();
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSDate *uncleanStart = nil;
+    sLaunchDate = [NSDate date];
+    if ([fm fileExistsAtPath:path]) {
+        NSDictionary *marker = [NSDictionary dictionaryWithContentsOfFile:path];
+        id pid = marker[@"pid"];
+        if ([pid isKindOfClass:[NSNumber class]] && NppIsOtherLiveInstance([pid intValue])) {
+            NSLog(@"[Nextpad++] another instance (pid %@) is running; skipping crash recovery", pid);
+            return nil;                                   // not ours: leave it alone
+        }
+        id since    = marker[@"recoverSince"];
+        id launched = marker[@"launched"];
+        uncleanStart = [since isKindOfClass:[NSDate class]]    ? since
+                     : [launched isKindOfClass:[NSDate class]] ? launched
+                     : ([fm attributesOfItemAtPath:path error:nil].fileModificationDate
+                        ?: [NSDate distantPast]);
+    }
+    sOwnsRunMarker = YES;
+    NppWriteRunMarker(uncleanStart);
+    return uncleanStart;
+}
+
+/// The recovery step ran: later launches need only look at this run.
+static void NppRecoveryDone(void) {
+    if (sOwnsRunMarker) NppWriteRunMarker(nil);
+}
+
 @interface AppDelegate ()
 - (NSArray<NSString *> *)_expandFolderArguments:(NSArray<NSString *> *)paths;
 @end
@@ -151,6 +214,7 @@ static const NSUInteger kFolderOpenConfirmThreshold = 20;
 
     // ── Session / file handling ─────────────────────────────────────────
 
+    NSDate *uncleanRunStart = NppMarkLaunch();
     BOOL hasContent = NO;
     if (cli.sessionFile.length) {
         [self.mainWindowController loadSessionFromPath:cli.sessionFile];
@@ -165,6 +229,15 @@ static const NSUInteger kFolderOpenConfirmThreshold = 20;
         // editor on each launch. -nosession CLI flag still overrides per-invocation.
         hasContent = [self.mainWindowController restoreLastSession];
     }
+    // Crash recovery is its own step, whatever opened above (session, CLI
+    // files, -openSession, or nothing with the session off): after an unclean
+    // exit, backups that run wrote and no manifest names are the only copy of
+    // its unsaved text. After a clean exit nothing is recovered.
+    if (uncleanRunStart) {
+        if ([self.mainWindowController recoverBackupsFromUncleanExitSince:uncleanRunStart])
+            hasContent = YES;
+    }
+    NppRecoveryDone();
     // If nothing was opened, create an empty tab (first launch or -nosession with no files)
     if (!hasContent) {
         #pragma clang diagnostic push
@@ -478,6 +551,8 @@ static const NSUInteger kFolderOpenConfirmThreshold = 20;
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     [[NppPluginManager shared] shutdown];
+    if (sOwnsRunMarker)
+        [[NSFileManager defaultManager] removeItemAtPath:NppRunMarkerPath() error:nil];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {

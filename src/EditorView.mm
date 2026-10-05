@@ -266,6 +266,10 @@ static NSUInteger nppLargeFileThreshold(void) {
 
 @implementation EditorView {
     BOOL    _isModified;
+    // Loaded from a backup (-markAsModified): the Scintilla save point is the
+    // backup text, not the file, so reaching it must not clear _isModified.
+    // Cleared by a real save or a reload from disk.
+    BOOL    _dirtyFromBackup;
     NSStringEncoding _fileEncoding;
     BOOL    _hasBOM;
     BOOL    _largeFileMode;
@@ -393,6 +397,7 @@ static NSUInteger nppLargeFileThreshold(void) {
     _fileEncoding = source->_fileEncoding;
     _hasBOM = source->_hasBOM;
     _isModified = source->_isModified;
+    _dirtyFromBackup = source->_dirtyFromBackup;
     _largeFileMode = source->_largeFileMode;
     if (source.currentLanguage.length)
         [self setLanguage:source.currentLanguage];
@@ -618,7 +623,13 @@ static NSUInteger nppLargeFileThreshold(void) {
     _fileEncoding = enc;
     _hasBOM = hasBOM;
     _isModified = NO;
-    _backupFilePath = nil; // buffer loaded from disk — no backup needed
+    _dirtyFromBackup = NO;
+    // Buffer (re)loaded from disk: no backup needed. On a reload the old backup
+    // holds the text the user just discarded; delete it so crash recovery does
+    // not bring it back. (A backup being loaded into a fresh tab is not ours yet.)
+    if (_backupFilePath && ![_backupFilePath isEqualToString:path])
+        [[NSFileManager defaultManager] removeItemAtPath:_backupFilePath error:nil];
+    _backupFilePath = nil;
 
     _largeFileMode = large;
 
@@ -791,6 +802,9 @@ static NSUInteger nppLargeFileThreshold(void) {
     NSString *oldPath = _filePath;
     _filePath = [path copy];
     _isModified = NO;
+    _dirtyFromBackup = NO;
+    _recoveredFromName = nil;
+    if (_cloneSibling) _cloneSibling->_dirtyFromBackup = NO;
     [_scintillaView message:SCI_SETSAVEPOINT];
     if (_backupFilePath) {
         [[NSFileManager defaultManager] removeItemAtPath:_backupFilePath error:nil];
@@ -853,6 +867,11 @@ static NSUInteger nppLargeFileThreshold(void) {
 
 - (void)markAsModified {
     _isModified = YES;
+    _dirtyFromBackup = YES;
+}
+
+- (NSString *)suggestedSaveName {
+    return _recoveredFromName.length ? _recoveredFromName : self.displayName;
 }
 
 /// Write content to the backup directory using raw Scintilla bytes.
@@ -951,6 +970,12 @@ static NSUInteger nppLargeFileThreshold(void) {
     // MainWindowController). The UTF-8/no-BOM branch above never cleared it
     // either; the two paths now agree.
     return nil;
+}
+
+- (void)discardBackup {
+    if (!_backupFilePath) return;
+    [[NSFileManager defaultManager] removeItemAtPath:_backupFilePath error:nil];
+    _backupFilePath = nil;
 }
 
 #pragma mark - Menu validation (checkmarks for toggle items)
@@ -1348,11 +1373,13 @@ static NSUInteger nppLargeFileThreshold(void) {
     [_scintillaView message:SCI_ADDTEXT wParam:(uptr_t)utf8Data.length lParam:(sptr_t)utf8Data.bytes];
     [_scintillaView message:SCI_GOTOPOS wParam:0 lParam:0];
     [_scintillaView message:SCI_EMPTYUNDOBUFFER];
+    _dirtyFromBackup = NO;
     [_scintillaView message:SCI_SETSAVEPOINT];
 
     _fileEncoding = enc;
     _hasBOM = bom;
     _isModified = NO;
+    [self discardBackup];   // the reload discarded the unsaved text it held
     return YES;
 }
 
@@ -4745,6 +4772,9 @@ static NSSet<NSString *> *_cLikeLanguages() {
             }
             break;
         case SCN_SAVEPOINTREACHED:
+            // A buffer restored from a backup has its save point at the backup
+            // text; undoing back to it does not make it match the file.
+            if (_dirtyFromBackup) break;
             _isModified = NO;
             if (_cloneSibling) _cloneSibling->_isModified = NO;
             break;
