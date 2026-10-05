@@ -10471,10 +10471,9 @@ static BOOL _writeCLIScript(NSString *script, NSString *path, NSError **outErr) 
     if (![NppThemeManager shared].usesGlassMaterials)
         _statusBar.layer.backgroundColor = [NppThemeManager shared].statusBarBackground.CGColor;
 
-    // Editor theme: NPPStyleStore observes this notification and switches to
-    // the theme remembered for the new appearance. The call is idempotent;
-    // repeating it here covers the case where the store was created late.
-    [[NPPStyleStore sharedStore] syncThemeWithAppearance];
+    // Editor theme: NPPStyleStore observes this notification itself (it is
+    // created at launch) and switches to the theme remembered for the new
+    // appearance.
 
     // Re-skin the toolbar (light/dark icon set + colorization).
     [self _reskinToolbarIcons];

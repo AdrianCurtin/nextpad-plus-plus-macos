@@ -488,16 +488,26 @@ static NSString *_userThemesDir(void) {
     return lum < 0.5;
 }
 
-/// One-time migration for builds that kept a single NPPActiveTheme: file the
-/// saved theme under the appearance it suits, so a light theme is not forced
-/// onto a dark appearance (or vice versa). The other slot keeps its default.
+/// One-time migration for builds that kept a single NPPActiveTheme. The goal is
+/// that the first launch after upgrading looks unchanged, except for the #370
+/// state (Auto mode with a theme that does not suit the system appearance,
+/// typically the stale light Default while macOS is dark):
+///  - explicit Light/Dark, or a theme whose brightness matches the current
+///    appearance: seed the current appearance's slot with it (no visual change);
+///  - Auto with a mismatched theme: file it under the slot it suits, so the
+///    current appearance gets its default (fixes #370) and the theme returns
+///    on the next flip.
+/// The other slot keeps its default.
 - (void)_seedAppearanceSlotsIfNeeded {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     if ([ud objectForKey:kNSDefaultsLightThemeKey] || [ud objectForKey:kNSDefaultsDarkThemeKey]) return;
     NSString *active = [ud stringForKey:kNSDefaultsThemeKey];
     if (!active.length || ![self.availableThemeNames containsObject:active]) return;
-    [ud setObject:active forKey:[self _themeIsDark:active] ? kNSDefaultsDarkThemeKey
-                                                           : kNSDefaultsLightThemeKey];
+
+    NppThemeManager *tm = [NppThemeManager shared];
+    BOOL themeDark = [self _themeIsDark:active];
+    BOOL slotDark = (tm.mode != NppDarkModeAuto || themeDark == tm.isDark) ? tm.isDark : themeDark;
+    [ud setObject:active forKey:slotDark ? kNSDefaultsDarkThemeKey : kNSDefaultsLightThemeKey];
 }
 
 - (void)syncThemeWithAppearance {
@@ -721,8 +731,22 @@ static NSString *_userThemesDir(void) {
     if (self) {
         [self _buildUI];
         _selectedStyleID = -1;
+        [[NSNotificationCenter defaultCenter]
+            addObserver:self selector:@selector(_appearanceChanged:)
+                   name:NPPDarkModeChangedNotification object:nil];
     }
     return self;
+}
+
+/// Light/dark flip while the window is open: the snapshot taken on open belongs
+/// to the old appearance's theme slot. Drop unsaved edits, let the store switch
+/// to the new slot's theme, then re-snapshot so Save writes the theme being
+/// shown into the current slot and Cancel never restores a pre-flip theme.
+- (void)_appearanceChanged:(NSNotification *)n {
+    if (!self.window.isVisible) return;
+    [self _restoreCancelSnapshot];
+    [[NPPStyleStore sharedStore] syncThemeWithAppearance];
+    [self _loadFromStore];
 }
 
 // ── UI construction ───────────────────────────────────────────────────────────
@@ -1234,7 +1258,13 @@ static NSString *_userThemesDir(void) {
 }
 
 - (void)_cancel:(id)sender {
-    // Restore state that was active when window was opened
+    [self _restoreCancelSnapshot];
+    [self.window close];
+}
+
+/// Restore the store state that was active when the window was opened (or
+/// last re-snapshotted after an appearance flip).
+- (void)_restoreCancelSnapshot {
     if (_cancelBackup) {
         [NPPStyleStore sharedStore].activeThemeName = _cancelTheme ?: kDefaultThemeName;
         // Roll the Global override flags back to their snapshot before
@@ -1250,7 +1280,6 @@ static NSString *_userThemesDir(void) {
         [d setBool:_backupOverrideUnderline forKey:kPrefGlobalOverrideEnableUnderline];
         [[NPPStyleStore sharedStore] previewLexers:_cancelBackup];
     }
-    [self.window close];
 }
 
 // ── Import NPP theme XML ──────────────────────────────────────────────────────
@@ -1319,6 +1348,13 @@ static NSString *_userThemesDir(void) {
 
 - (void)showWindow:(id)sender {
     [super showWindow:sender];
+    [self _loadFromStore];
+    [self.window center];
+}
+
+/// Snapshot the live store (for Cancel) and rebuild the working copy and popups
+/// from the active theme. Called on open and after an appearance flip.
+- (void)_loadFromStore {
     NPPStyleStore *store = [NPPStyleStore sharedStore];
     if (!store.allLexers.count) [store loadFromDefaults];
 
@@ -1390,8 +1426,6 @@ static NSString *_userThemesDir(void) {
         [_langPopup selectItemAtIndex:0];
         [self _selectLangAtIndex:0];
     }
-
-    [self.window center];
 }
 
 @end
