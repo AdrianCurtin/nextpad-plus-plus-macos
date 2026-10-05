@@ -2,6 +2,7 @@
 #import "NppTabBar.h"
 
 @class EditorView;
+@class TabManager;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -14,6 +15,16 @@ NS_ASSUME_NONNULL_BEGIN
 @protocol TabManagerDelegate <NSObject>
 - (void)tabManager:(id)tabManager didSelectEditor:(EditorView *)editor;
 - (void)tabManager:(id)tabManager didCloseEditor:(EditorView *)editor;
+@optional
+/// Whether `editor` may be torn off into a new window by dragging its tab out.
+- (BOOL)tabManager:(TabManager *)tabManager canDetachEditor:(EditorView *)editor;
+/// `editor`'s tab was dragged out and released away from every tab bar.
+- (void)tabManager:(TabManager *)tabManager detachEditor:(EditorView *)editor
+     toScreenPoint:(NSPoint)screenPoint;
+/// `editor`'s tab was dropped on `target`'s tab bar (another split pane or
+/// another window) at insertion slot `index`.
+- (void)tabManager:(TabManager *)tabManager moveEditor:(EditorView *)editor
+      toTabManager:(TabManager *)target atIndex:(NSInteger)index;
 @end
 
 /// Manages the custom tab bar and the set of open editor views.
@@ -46,10 +57,16 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Remove an editor from this manager without any save prompt or deallocation.
 /// The EditorView stays alive; caller is responsible for adopting it elsewhere.
+/// Selection stays on the current tab unless it was the one removed. Unlike
+/// -removeEditor:, this may leave the manager with no tabs.
 - (void)evictEditor:(EditorView *)editor;
 
 /// Insert an existing, already-initialized EditorView into this manager as a new tab.
 - (void)adoptEditor:(EditorView *)editor;
+
+/// As -adoptEditor:, inserting the tab at `index` (clamped to 0…count) and
+/// selecting it.
+- (void)adoptEditor:(EditorView *)editor atIndex:(NSInteger)index;
 
 /// Notify tab bar that the current editor's modified state changed.
 - (void)refreshCurrentTabTitle;
