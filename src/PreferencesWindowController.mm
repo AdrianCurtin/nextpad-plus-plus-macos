@@ -1284,8 +1284,12 @@ NSString *const kPrefStyleFontSize      = @"styleFontSize";
         [fqPopup addItemWithTitle:[loc translate:fq[0]]];
         fqPopup.lastItem.tag = [fq[1] integerValue];
     }
-    if (![fqPopup selectItemWithTag:[ud integerForKey:kPrefFontQuality]])
+    if (![fqPopup selectItemWithTag:[ud integerForKey:kPrefFontQuality]]) {
+        // Out-of-range stored value: show and store the default so the popup
+        // matches what Scintilla renders.
         [fqPopup selectItemWithTag:3];
+        [ud setInteger:3 forKey:kPrefFontQuality];
+    }
     fqPopup.tag = 705; fqPopup.target = self; fqPopup.action = @selector(prefChanged:);
     [v addSubview:fqPopup];
 

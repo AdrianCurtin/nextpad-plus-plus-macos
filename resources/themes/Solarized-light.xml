@@ -29,9 +29,9 @@ License:             Feel free to modify this theme.
 
 Requirements:
     * This theme is based on the Inconsolata-dz font http://media.nodnod.net/Inconsolata-dz.otf.zip
-      However, that font may be replaced in the "GlobalStyles" section of this
-      file, where it is found in only the "Global override" and "Default Style" lines.
-      Fonts are not separately specified anywhere else in this version of the style file.
+      In Nextpad++ for macOS this theme sets no font: the "Default Style" and
+      "Global override" lines leave fontName empty, so the editor font from
+      stylers.xml (Menlo by default) is used. Set fontName there to override it.
       Note 3/29/2012: I have replaced Inconsola-dz with Consolas, since Consolas is
       installed by default in recent versions of Windows.
 

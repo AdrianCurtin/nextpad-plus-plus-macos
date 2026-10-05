@@ -339,16 +339,34 @@ static NSString *_userThemesDir(void) {
     [self _buildDict];
 }
 
-// Rewrite one attribute value inside the first <WidgetStyle name="..."> tag of
-// `xml`, only if it currently equals `oldValue`. Text-level edit so the rest of
-// the file (comments, attribute order, line endings) is left byte-for-byte.
-static BOOL _replaceWidgetAttr(NSMutableString *xml, NSString *styleName,
-                               NSString *attr, NSString *oldValue, NSString *newValue) {
+// Range of the first live (not inside <!-- -->) <WidgetStyle name="..."> tag.
+static NSRange _widgetTagRange(NSString *xml, NSString *styleName) {
+    NSRegularExpression *commentRe = [NSRegularExpression
+        regularExpressionWithPattern:@"<!--.*?-->"
+                             options:NSRegularExpressionDotMatchesLineSeparators error:nil];
+    NSArray<NSTextCheckingResult *> *comments =
+        [commentRe matchesInString:xml options:0 range:NSMakeRange(0, xml.length)];
     NSString *tagPattern = [NSString stringWithFormat:
         @"<WidgetStyle\\b[^>]*\\bname=\"%@\"[^>]*>",
         [NSRegularExpression escapedPatternForString:styleName]];
     NSRegularExpression *tagRe = [NSRegularExpression regularExpressionWithPattern:tagPattern options:0 error:nil];
-    NSRange tag = [tagRe firstMatchInString:xml options:0 range:NSMakeRange(0, xml.length)].range;
+    for (NSTextCheckingResult *m in [tagRe matchesInString:xml options:0 range:NSMakeRange(0, xml.length)]) {
+        BOOL commented = NO;
+        for (NSTextCheckingResult *c in comments) {
+            if (NSLocationInRange(m.range.location, c.range)) { commented = YES; break; }
+        }
+        if (!commented) return m.range;
+    }
+    return NSMakeRange(NSNotFound, 0);
+}
+
+// Rewrite one attribute value inside the first live <WidgetStyle name="...">
+// tag of `xml`, only if it currently equals `oldValue`. Text-level edit so the
+// rest of the file (comments, attribute order, line endings) is left
+// byte-for-byte.
+static BOOL _replaceWidgetAttr(NSMutableString *xml, NSString *styleName,
+                               NSString *attr, NSString *oldValue, NSString *newValue) {
+    NSRange tag = _widgetTagRange(xml, styleName);
     if (tag.location == NSNotFound) return NO;
     NSString *needle = [NSString stringWithFormat:@" %@=\"%@\"", attr, oldValue];
     NSRange hit = [xml rangeOfString:needle options:0 range:tag];
@@ -370,7 +388,9 @@ static BOOL _widgetHasAttr(NSString *xml, NSString *styleName, NSString *attr, N
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     if ([ud boolForKey:kDoneKey]) return;
 
-    NSString *path = NppConfigSubpath(@"stylers.xml");
+    // Resolve a symlinked stylers.xml (e.g. into a dotfiles repo) so the
+    // atomic write replaces the target file, not the link.
+    NSString *path = [NppConfigSubpath(@"stylers.xml") stringByResolvingSymlinksInPath];
     NSData *data = [NSData dataWithContentsOfFile:path];
     if (!data) {
         // No user copy yet: it will be created from the current model,
@@ -378,12 +398,20 @@ static BOOL _widgetHasAttr(NSString *xml, NSString *styleName, NSString *attr, N
         [ud setBool:YES forKey:kDoneKey];
         return;
     }
-    NSMutableString *xml = [[NSMutableString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    // Keep a UTF-8 BOM if the file has one; NSString decoding drops it.
+    static const uint8_t kBOM[3] = {0xEF, 0xBB, 0xBF};
+    BOOL hasBOM = data.length >= 3 && memcmp(data.bytes, kBOM, 3) == 0;
+    NSData *body = hasBOM ? [data subdataWithRange:NSMakeRange(3, data.length - 3)] : data;
+    NSMutableString *xml = [[NSMutableString alloc] initWithData:body encoding:NSUTF8StringEncoding];
     if (!xml) { [ud setBool:YES forKey:kDoneKey]; return; }
 
     // A font the user chose in Style Configurator is also recorded here;
-    // its presence means "touched", whatever the XML says.
-    NSDictionary *overrides = [ud dictionaryForKey:kNSDefaultsStyleKey];
+    // its presence means "touched", whatever the XML says. The overrides are
+    // diffs against the active theme, so they only describe stylers.xml when
+    // that theme is the default one.
+    NSString *activeTheme = [ud stringForKey:kNSDefaultsThemeKey];
+    BOOL overridesAreStylers = !activeTheme.length || [activeTheme isEqualToString:kDefaultThemeName];
+    NSDictionary *overrides = overridesAreStylers ? [ud dictionaryForKey:kNSDefaultsStyleKey] : nil;
     BOOL changed = NO;
 
     // Default Style: only the exact old pair counts as "never touched".
@@ -404,8 +432,11 @@ static BOOL _widgetHasAttr(NSString *xml, NSString *styleName, NSString *attr, N
     }
 
     if (changed) {
+        NSMutableData *out = [NSMutableData data];
+        if (hasBOM) [out appendBytes:kBOM length:3];
+        [out appendData:[xml dataUsingEncoding:NSUTF8StringEncoding]];
         NSError *err = nil;
-        if (![[xml dataUsingEncoding:NSUTF8StringEncoding] writeToFile:path options:NSDataWritingAtomic error:&err]) {
+        if (![out writeToFile:path options:NSDataWritingAtomic error:&err]) {
             NSLog(@"[NPPStyleStore] default font migration: could not write %@: %@", path, err);
             return;  // retry next launch
         }
