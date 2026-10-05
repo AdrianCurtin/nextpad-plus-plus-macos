@@ -16,6 +16,30 @@
 // Files opened from a folder beyond this count trigger a confirmation.
 static const NSUInteger kFolderOpenConfirmThreshold = 20;
 
+// ── Unclean-exit detection ──────────────────────────────────────────────────
+// running.marker exists from launch until -applicationWillTerminate:. Finding
+// it at launch means the previous run crashed, was force quit, or lost power.
+static NSString *NppRunMarkerPath(void) {
+    return NppConfigSubpath(@"running.marker");
+}
+
+/// Record this launch. Returns when the previous run started if it did not
+/// exit cleanly, nil if it did (or on first launch).
+static NSDate *NppMarkLaunch(void) {
+    NSString *path = NppRunMarkerPath();
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSDate *uncleanStart = nil;
+    if ([fm fileExistsAtPath:path]) {
+        NSDictionary *marker = [NSDictionary dictionaryWithContentsOfFile:path];
+        id launched = marker[@"launched"];
+        uncleanStart = [launched isKindOfClass:[NSDate class]] ? launched
+                     : ([fm attributesOfItemAtPath:path error:nil].fileModificationDate
+                        ?: [NSDate distantPast]);
+    }
+    [@{ @"launched": [NSDate date], @"pid": @(getpid()) } writeToFile:path atomically:YES];
+    return uncleanStart;
+}
+
 @interface AppDelegate ()
 - (NSArray<NSString *> *)_expandFolderArguments:(NSArray<NSString *> *)paths;
 @end
@@ -151,6 +175,7 @@ static const NSUInteger kFolderOpenConfirmThreshold = 20;
 
     // ── Session / file handling ─────────────────────────────────────────
 
+    NSDate *uncleanRunStart = NppMarkLaunch();
     BOOL hasContent = NO;
     if (cli.sessionFile.length) {
         [self.mainWindowController loadSessionFromPath:cli.sessionFile];
@@ -164,6 +189,12 @@ static const NSUInteger kFolderOpenConfirmThreshold = 20;
         // mirrors the Windows NPP RememberLastSession option. Off → start with a clean
         // editor on each launch. -nosession CLI flag still overrides per-invocation.
         hasContent = [self.mainWindowController restoreLastSession];
+    } else if (uncleanRunStart) {
+        // Session restore is off, so nothing reopens tabs, but the previous run
+        // did not exit cleanly: its unsaved buffers exist only as backups.
+        // Recover the ones that run wrote. Older backups (left by clean quits
+        // with the session off) stay untouched, as they always have.
+        hasContent = [self.mainWindowController recoverBackupsFromUncleanExitSince:uncleanRunStart];
     }
     // If nothing was opened, create an empty tab (first launch or -nosession with no files)
     if (!hasContent) {
@@ -478,6 +509,7 @@ static const NSUInteger kFolderOpenConfirmThreshold = 20;
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     [[NppPluginManager shared] shutdown];
+    [[NSFileManager defaultManager] removeItemAtPath:NppRunMarkerPath() error:nil];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {

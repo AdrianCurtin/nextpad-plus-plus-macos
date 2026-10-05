@@ -44,6 +44,11 @@ extern NSNotificationName const EditorViewZoomDidChangeNotification;
 /// Updates backupFilePath on success. Returns the backup path or nil.
 - (nullable NSString *)saveBackupToDirectory:(NSString *)dir;
 
+/// Delete this buffer's backup file, if any, and clear backupFilePath. Called
+/// when the tab is closed, so text the user chose not to save is not brought
+/// back by crash recovery.
+- (void)discardBackup;
+
 /// `dir`/`filename`, made unique by appending "-2", "-3", … while a file already
 /// exists there. Backup names are "<display name>@<timestamp>" at one-second
 /// resolution, and neither part is unique across buffers: two tabs for

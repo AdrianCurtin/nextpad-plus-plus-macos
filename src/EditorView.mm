@@ -953,6 +953,12 @@ static NSUInteger nppLargeFileThreshold(void) {
     return nil;
 }
 
+- (void)discardBackup {
+    if (!_backupFilePath) return;
+    [[NSFileManager defaultManager] removeItemAtPath:_backupFilePath error:nil];
+    _backupFilePath = nil;
+}
+
 #pragma mark - Menu validation (checkmarks for toggle items)
 
 - (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item {

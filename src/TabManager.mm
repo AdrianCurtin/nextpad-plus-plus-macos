@@ -272,6 +272,13 @@
     NSInteger idx = [_editors indexOfObject:editor];
     if (idx == NSNotFound) return;
 
+    // The tab is going away for good: every caller has already saved it or the
+    // user chose "Don't Save". Its backup used to linger until the next session
+    // prune; now that launch recovers unreferenced backups as orphans, a
+    // lingering one would bring the discarded text back after a crash. (Moving
+    // a tab between views goes through -evictEditor:, not here.)
+    [editor discardBackup];
+
     // Unregister file presenter so the EditorView can be deallocated.
     // (NSFileCoordinator holds a strong ref to registered presenters.)
     [editor prepareForClose];
