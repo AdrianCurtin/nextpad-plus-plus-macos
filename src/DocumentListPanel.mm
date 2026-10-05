@@ -53,28 +53,9 @@ static void _docFields(EditorView *ed, NSString **outName,
 - (NSMenu *)contextMenuForRow:(NSInteger)row;
 @end
 
-// Text cell that keeps the theme foreground for normal rows but swaps to the
-// selected-text color on an emphasized (accent-filled) selection, where the
-// theme foreground can be unreadable (e.g. black on the blue accent).
-@interface _NppDocTextCell : NSTableCellView
-@property (nonatomic, strong) NSColor *themeTextColor;
-@end
-@implementation _NppDocTextCell
-- (void)_applyTextColor {
-    self.textField.textColor = (self.backgroundStyle == NSBackgroundStyleEmphasized)
-        ? NSColor.alternateSelectedControlTextColor
-        : (_themeTextColor ?: NSColor.labelColor);
-}
-- (void)setThemeTextColor:(NSColor *)c { _themeTextColor = c; [self _applyTextColor]; }
-- (void)setBackgroundStyle:(NSBackgroundStyle)s {
-    [super setBackgroundStyle:s];
-    [self _applyTextColor];
-}
-@end
-
 // Name-column cell that exposes its floppy-icon size constraints so they can be
 // rescaled when the panel is zoomed in/out (the icon tracks the row's font size).
-@interface _NppDocNameCell : _NppDocTextCell
+@interface _NppDocNameCell : NSTableCellView
 @property (nonatomic, strong) NSLayoutConstraint *iconW;
 @property (nonatomic, strong) NSLayoutConstraint *iconH;
 @end
@@ -291,7 +272,7 @@ static void _docFields(EditorView *ed, NSString **outName,
     [cv addSubview:iv];
     cv.imageView = iv;
 
-    NSTextField *tf = [NSTextField labelWithString:@""];
+    NSTextField *tf = [NppThemedLabel labelWithString:@""];
     tf.translatesAutoresizingMaskIntoConstraints = NO;
     tf.lineBreakMode = NSLineBreakByTruncatingTail;
     [cv addSubview:tf];
@@ -320,10 +301,10 @@ static void _docFields(EditorView *ed, NSString **outName,
 }
 
 - (NSTableCellView *)_makeTextCell {
-    _NppDocTextCell *cv = [[_NppDocTextCell alloc] init];
+    NSTableCellView *cv = [[NSTableCellView alloc] init];
     cv.identifier = @"DocTextCell";
 
-    NSTextField *tf = [NSTextField labelWithString:@""];
+    NSTextField *tf = [NppThemedLabel labelWithString:@""];
     tf.translatesAutoresizingMaskIntoConstraints = NO;
     tf.lineBreakMode = NSLineBreakByTruncatingTail;
     [cv addSubview:tf];
@@ -335,6 +316,13 @@ static void _docFields(EditorView *ed, NSString **outName,
         [tf.centerYAnchor  constraintEqualToAnchor:cv.centerYAnchor],
     ]];
     return cv;
+}
+
+- (void)_setTextColor:(NSColor *)c ofCell:(NSTableCellView *)cv {
+    if ([cv.textField isKindOfClass:[NppThemedLabel class]])
+        ((NppThemedLabel *)cv.textField).themeTextColor = c;
+    else
+        cv.textField.textColor = c;
 }
 
 - (nullable NSView *)tableView:(NSTableView *)tableView
@@ -349,7 +337,7 @@ static void _docFields(EditorView *ed, NSString **outName,
     // The row tint is semi-transparent (50%), blending toward the theme
     // background, so the theme foreground keeps good contrast over it in both
     // light and dark mode. An emphasized (accent) selection swaps to the
-    // selected-text color inside _NppDocTextCell.
+    // selected-text color inside NppThemedLabel.
     NSColor  *textColor = fg;
     NSFont   *font    = [NSFont systemFontOfSize:_panelFontSize];
     NSString *fullTip = ed.filePath ?: ed.displayName;
@@ -373,10 +361,7 @@ static void _docFields(EditorView *ed, NSString **outName,
            forDarkBackground:_bgIsDark];
         cv.textField.stringValue = name;
         cv.textField.font        = font;
-        if ([cv isKindOfClass:[_NppDocTextCell class]])
-            ((_NppDocTextCell *)cv).themeTextColor = textColor;
-        else
-            cv.textField.textColor = textColor;
+        [self _setTextColor:textColor ofCell:cv];
         return cv;
     }
 
@@ -385,10 +370,7 @@ static void _docFields(EditorView *ed, NSString **outName,
     cv.toolTip = fullTip;
     cv.textField.stringValue = [colId isEqualToString:@"ext"] ? ext : path;
     cv.textField.font        = font;
-    if ([cv isKindOfClass:[_NppDocTextCell class]])
-        ((_NppDocTextCell *)cv).themeTextColor = textColor;
-    else
-        cv.textField.textColor = textColor;
+    [self _setTextColor:textColor ofCell:cv];
     return cv;
 }
 

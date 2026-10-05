@@ -465,7 +465,6 @@ static void _PPCollectFiles(_ProjectItem *item, NSMutableArray<NSString *> *out)
 
 - (void)_applyTheme {
     NSColor *bg = [[NPPStyleStore sharedStore] globalBg];
-    CGFloat brightness = bg.brightnessComponent;
 
     self.wantsLayer = YES;
     self.layer.backgroundColor = bg.CGColor;
@@ -473,7 +472,7 @@ static void _PPCollectFiles(_ProjectItem *item, NSMutableArray<NSString *> *out)
     _scrollView.backgroundColor  = bg;
 
     _outlineView.appearance = [NSAppearance appearanceNamed:
-        brightness < 0.5 ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+        [NppThemeManager isDarkColor:bg] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
 
     [_outlineView reloadData];
 }
@@ -565,8 +564,9 @@ static void _PPCollectFiles(_ProjectItem *item, NSMutableArray<NSString *> *out)
 
 - (NSImage *)_treeviewIcon:(NSString *)name {
     NSString *subdir = kTreeviewSubdir;
-    // Use dark icons if dark mode
-    if ([NppThemeManager shared].isDark) {
+    // Icons sit on the theme background (globalBg), not the chrome, so pick
+    // the set from that: dark-chrome icons wash out on a light theme.
+    if ([NppThemeManager isDarkColor:[[NPPStyleStore sharedStore] globalBg]]) {
         subdir = @"icons/dark/panels/treeview";
     }
     NSURL *url = [[NSBundle mainBundle] URLForResource:name withExtension:@"png"
@@ -1111,7 +1111,7 @@ static void _PPCollectFiles(_ProjectItem *item, NSMutableArray<NSString *> *out)
         [iv.heightAnchor constraintEqualToConstant:16].active = YES;
         cell.imageView = iv;
 
-        NSTextField *tf = [NSTextField textFieldWithString:@""];
+        NSTextField *tf = [NppThemedLabel textFieldWithString:@""];
         tf.translatesAutoresizingMaskIntoConstraints = NO;
         tf.bordered    = NO;
         tf.editable    = YES;
@@ -1133,7 +1133,10 @@ static void _PPCollectFiles(_ProjectItem *item, NSMutableArray<NSString *> *out)
     }
 
     cell.textField.stringValue = pi.name;
-    cell.textField.textColor   = [[NPPStyleStore sharedStore] globalFg];
+    if ([cell.textField isKindOfClass:[NppThemedLabel class]])
+        ((NppThemedLabel *)cell.textField).themeTextColor = [[NPPStyleStore sharedStore] globalFg];
+    else
+        cell.textField.textColor = [[NPPStyleStore sharedStore] globalFg];
 
     // Workspace root: not user-editable name (use context menu rename)
     cell.textField.editable = (pi.type != PPNodeWorkspace);

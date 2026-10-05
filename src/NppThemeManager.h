@@ -140,4 +140,14 @@ typedef struct {
 
 @end
 
+/// Label for side-panel table/outline rows painted with the editor theme.
+/// Draws in `themeTextColor` (normally NPPStyleStore globalFg), but switches to
+/// the selected-text color while its row shows the emphasized (accent-filled)
+/// selection, where the theme foreground can be unreadable (black on blue).
+/// Works as a bare row view or as the textField of an NSTableCellView: the row
+/// view forwards its background style to the label's cell either way.
+@interface NppThemedLabel : NSTextField
+@property (nonatomic, strong, nullable) NSColor *themeTextColor;
+@end
+
 NS_ASSUME_NONNULL_END
