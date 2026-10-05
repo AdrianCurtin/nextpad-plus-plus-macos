@@ -100,3 +100,8 @@ static_assert(NppScintillaIDsDetail::outside(kClickableLinkIndicator, kPluginInd
 static_assert(kPluginIndicatorFirst >= 8 && kPluginIndicatorLimit <= 32,
               "plugin indicators overlap lexer (0-7) or IME/history (32+) indicators");
 static_assert(kPluginCmdIDLimit <= kPluginDynamicCmdIDFirst, "plugin cmdID ranges overlap");
+static_assert(kBookmarkMarker < 21 && kHideLinesBeginMarker < 21 && kGitMarkerDeleted < 21,
+              "host markers overlap Scintilla change-history (21-24) or fold (25-31) markers");
+static_assert(kFindMarkIndicator < 32 && kSpellIndicator < 32 && kHighlightIndicator < 32 &&
+              kIndicatorIncSearch < 32 && kGitDiffIndicator < 32 && kClickableLinkIndicator >= 8,
+              "host indicators overlap lexer (0-7) or IME/history (32+) indicators");
