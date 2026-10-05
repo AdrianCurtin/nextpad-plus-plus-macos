@@ -375,3 +375,42 @@ static NSDictionary<NSString *, NSString *> *toolbarIconMapping(void) {
 }
 
 @end
+
+// ── NppThemedLabel ───────────────────────────────────────────────────────────
+
+@interface _NppThemedLabelCell : NSTextFieldCell
+@property (nonatomic, strong, nullable) NSColor *themeTextColor;
+@end
+
+@implementation _NppThemedLabelCell
+- (void)_applyThemeTextColor {
+    if (!_themeTextColor) return;   // never themed: leave textColor alone
+    self.textColor = (self.backgroundStyle == NSBackgroundStyleEmphasized)
+        ? NSColor.alternateSelectedControlTextColor
+        : _themeTextColor;
+}
+- (void)setThemeTextColor:(NSColor *)c {
+    _themeTextColor = c;
+    [self _applyThemeTextColor];
+}
+- (void)setBackgroundStyle:(NSBackgroundStyle)s {
+    [super setBackgroundStyle:s];
+    [self _applyThemeTextColor];
+}
+@end
+
+@implementation NppThemedLabel
++ (Class)cellClass { return [_NppThemedLabelCell class]; }
+- (nullable NSColor *)themeTextColor {
+    id c = self.cell;
+    return [c isKindOfClass:[_NppThemedLabelCell class]]
+        ? ((_NppThemedLabelCell *)c).themeTextColor : nil;
+}
+- (void)setThemeTextColor:(nullable NSColor *)c {
+    id cell = self.cell;
+    if ([cell isKindOfClass:[_NppThemedLabelCell class]])
+        ((_NppThemedLabelCell *)cell).themeTextColor = c;
+    else
+        self.textColor = c;
+}
+@end
