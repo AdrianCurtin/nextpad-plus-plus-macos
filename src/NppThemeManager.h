@@ -96,6 +96,8 @@ typedef struct {
 @property (nonatomic, readonly) NSColor *tabBorder;
 @property (nonatomic, readonly) NSColor *tabText;
 @property (nonatomic, readonly) NSColor *tabTextInactive;
+/// Red used for the unsaved-document floppy (tab bar, Document List).
+@property (nonatomic, readonly) NSColor *unsavedIconTint;
 @property (nonatomic, readonly) NSColor *dividerDark;
 @property (nonatomic, readonly) NSColor *dividerLight;
 
@@ -123,6 +125,10 @@ typedef struct {
 /// Load a toolbar icon by standard name (e.g. "saveFile"). Automatically maps to
 /// dark icon name if in dark mode. Returns nil if not found.
 - (nullable NSImage *)toolbarIconNamed:(NSString *)standardName;
+
+/// Solid red floppy marking a document with unsaved changes (filled save
+/// glyph tinted with -unsavedIconTint). Falls back to "saveFileRed".
+- (nullable NSImage *)unsavedDocumentIcon;
 
 /// Load a tabbar icon by name (e.g. "closeTabButton"). Uses current theme directory.
 - (nullable NSImage *)tabbarIconNamed:(NSString *)name;
