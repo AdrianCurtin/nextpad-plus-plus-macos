@@ -37,8 +37,17 @@ extern NSNotificationName const EditorViewZoomDidChangeNotification;
 /// Restore the untitled index from a saved session (keeps tab name consistent).
 - (void)restoreUntitledIndex:(NSInteger)index;
 
-/// Force the modified flag to YES (used after session restore from backup).
+/// Mark a buffer just loaded from a backup as modified. It stays modified until
+/// it is saved or reloaded: undoing back to the load point does not make it
+/// clean, because the file on disk (if any) does not hold that text.
 - (void)markAsModified;
+
+/// For a tab recovered from an orphaned backup: the name it had before, which
+/// Save As suggests instead of the "(recovered)" tab title.
+@property (nonatomic, copy, nullable) NSString *recoveredFromName;
+
+/// File name the save panels suggest: recoveredFromName, else displayName.
+@property (nonatomic, readonly) NSString *suggestedSaveName;
 
 /// Write current content to dir using NPP-style timestamped filename.
 /// Updates backupFilePath on success. Returns the backup path or nil.

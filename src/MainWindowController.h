@@ -28,15 +28,13 @@ NS_ASSUME_NONNULL_BEGIN
 /// Load a session file (plist format with tabs array).
 - (void)loadSessionFromPath:(NSString *)path;
 
-/// Restore the last session from ~/Library/Application Support/Nextpad++/session.plist,
-/// then open every backup file the session does not name as a "recovered: <name>"
-/// tab. Returns YES if at least one tab was opened.
+/// Restore the last session from ~/Library/Application Support/Nextpad++/session.plist.
 - (BOOL)restoreLastSession;
 
-/// Crash recovery for launches that do not restore the session (Remember
-/// session off, or -nosession): open each backup file written at or after
-/// `since` (when the run that did not exit cleanly started) as a
-/// "recovered: <name>" tab. Returns YES if at least one tab was opened.
+/// Crash recovery, run at launch after an unclean exit whatever else opened:
+/// open each backup file written at or after `since` (when the run that did not
+/// exit cleanly started) that session.plist does not name and no open tab holds,
+/// as a "<name> (recovered)" tab. Returns YES if at least one tab was opened.
 - (BOOL)recoverBackupsFromUncleanExitSince:(NSDate *)since;
 
 /// The receiver's tab managers: primary view plus the horizontal/vertical split

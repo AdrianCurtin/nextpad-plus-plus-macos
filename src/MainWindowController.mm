@@ -2008,6 +2008,8 @@ static void _nppTahoeRoundEditorCard(NSView *container, NSView *content) {
     /// would otherwise leave the prior session.plist untouched, so the same
     /// tabs reappeared on next launch.)
     BOOL              _didRestoreSession;
+    /// Set only around the periodic session write; see -_sessionBackupFor:inDirectory:.
+    BOOL              _sessionSaveReusesBackups;
     BOOL              _isWindowReadyForResizeEvents;
 
     // Side panel host
@@ -2160,6 +2162,7 @@ static void _nppTahoeRoundEditorCard(NSView *container, NSView *content) {
                                                         selector:@selector(autoSaveTick:)
                                                         userInfo:nil
                                                          repeats:YES];
+        _autoSaveTimer.tolerance = 2.0;   // let macOS coalesce wakeups; timing is not critical
         [self _installScrollZoomMonitor];
     }
     return self;
@@ -4288,12 +4291,14 @@ static BOOL groupHasTrailingSep(NSString *ident) {
 }
 
 /// The controllers whose tabs belong in the session: every window that is still
-/// live, plus the receiver. The receiver is included unconditionally because the
-/// usual caller is a window in the middle of closing — its tabs are being closed
-/// as the app goes away, which is exactly the case that has always persisted.
-/// Windows the user closed earlier are excluded; those documents are gone.
+/// live, plus the receiver. The receiver is included even while closing because
+/// the usual caller is the last window closing as the app goes away, which is
+/// exactly the case that has always persisted. A window closed while others stay
+/// open marks itself closed first (-windowShouldClose:), so it is left out like
+/// windows the user closed earlier; those documents are gone.
 - (NSArray<MainWindowController *> *)_sessionContributingControllers {
-    NSMutableArray<MainWindowController *> *result = [NSMutableArray arrayWithObject:self];
+    NSMutableArray<MainWindowController *> *result = [NSMutableArray array];
+    if (!_windowHasClosed) [result addObject:self];
     id appDel = NSApp.delegate;
     if (![appDel isKindOfClass:[AppDelegate class]]) return result;  // unit hosts
 
@@ -4388,13 +4393,14 @@ static BOOL groupHasTrailingSep(NSString *ident) {
             // Untitled tab — restore if it has content OR was renamed (#177), so a
             // renamed organizational tab survives relaunch even when empty.
             if (!ed.isModified && !ed.customTabName.length) continue;
-            NSString *backup = [self _claimBackupFor:ed inDirectory:backupDir];
+            NSString *backup = [self _sessionBackupFor:ed inDirectory:backupDir];
             if (backup) { info[@"backupFilePath"] = backup; [activeBackups addObject:backup]; }
             info[@"untitledIndex"] = @(ed.untitledIndex);
             if (ed.customTabName.length) info[@"customTabName"] = ed.customTabName;
+            if (ed.recoveredFromName.length) info[@"recoveredFromName"] = ed.recoveredFromName;
         } else if (ed.isModified && !ed.largeFileMode) {
             // Named file with unsaved changes — back up content
-            NSString *backup = [self _claimBackupFor:ed inDirectory:backupDir];
+            NSString *backup = [self _sessionBackupFor:ed inDirectory:backupDir];
             if (backup) { info[@"backupFilePath"] = backup; [activeBackups addObject:backup]; }
         }
 
@@ -4516,6 +4522,19 @@ static BOOL groupHasTrailingSep(NSString *ident) {
     return YES;
 }
 
+/// The backup the session should reference for `ed`. The periodic manifest
+/// write (-_syncSessionManifest) follows the autosave tick that just wrote every
+/// modified buffer of the saver's window, and each other window's tick keeps its
+/// own buffers fresh, so it claims an existing backup file as is rather than
+/// writing every buffer a second time. Quit and window close always write.
+- (nullable NSString *)_sessionBackupFor:(EditorView *)ed inDirectory:(NSString *)dir {
+    NSString *existing = ed.backupFilePath;
+    if (_sessionSaveReusesBackups && existing.length
+        && [[NSFileManager defaultManager] fileExistsAtPath:existing])
+        return existing;
+    return [self _claimBackupFor:ed inDirectory:dir];
+}
+
 /// Write a backup for `ed` and return the path the session should claim.
 ///
 /// The prune at the end of a session save deletes every backup no editor claims,
@@ -4555,23 +4574,12 @@ static BOOL groupHasTrailingSep(NSString *ident) {
     return nil;
 }
 
-/// Restore session from ~/Library/Application Support/Nextpad++/session.plist,
-/// then recover any backup the manifest does not name (see
-/// -_recoverOrphanedBackupsExcluding:modifiedSince:).
-/// Returns YES if at least one tab was restored or recovered.
+/// Restore session from ~/Library/Application Support/Nextpad++/session.plist.
+/// Returns YES if at least one tab was restored.
 - (BOOL)restoreLastSession {
     NSDictionary *session = [NSDictionary dictionaryWithContentsOfFile:nppSessionPath()];
     NSArray<NSDictionary *> *tabs = session[@"tabs"];
-    if (![tabs isKindOfClass:[NSArray class]]) tabs = @[];
-
-    // Every backup the manifest names, whether or not it still loads: only the
-    // rest count as orphans.
-    NSMutableSet<NSString *> *referenced = [NSMutableSet set];
-    for (NSDictionary *info in tabs) {
-        if (![info isKindOfClass:[NSDictionary class]]) continue;
-        NSString *backup = info[@"backupFilePath"];
-        if ([backup isKindOfClass:[NSString class]]) [referenced addObject:nppCanonicalPath(backup)];
-    }
+    if (![tabs isKindOfClass:[NSArray class]] || !tabs.count) return NO;
 
     NSFileManager *fm = [NSFileManager defaultManager];
     NSInteger opened = 0;
@@ -4606,6 +4614,9 @@ static BOOL groupHasTrailingSep(NSString *ident) {
             nppNoteKnownBackup(backupPath);
             NSString *customName = info[@"customTabName"];   // #177 — restore renamed tab
             if (customName.length) ed.customTabName = customName;
+            NSString *recoveredFrom = info[@"recoveredFromName"];
+            if ([recoveredFrom isKindOfClass:[NSString class]] && recoveredFrom.length)
+                ed.recoveredFromName = recoveredFrom;
             [ed markAsModified];
         }
         if (lang.length) [ed setLanguage:lang];
@@ -4690,16 +4701,11 @@ static BOOL groupHasTrailingSep(NSString *ident) {
         opened++;
     }
 
-    NSInteger recovered = [self _recoverOrphanedBackupsExcluding:referenced modifiedSince:nil];
-    if (opened == 0 && recovered == 0) return NO;
+    if (opened == 0) return NO;
 
-    // Recovered tabs are appended after the restored ones, so the saved index
-    // still names the same tab.
-    if (opened > 0) {
-        NSInteger sel = [session[@"selectedIndex"] integerValue];
-        if (sel < (NSInteger)_tabManager.allEditors.count)
-            [_tabManager selectTabAtIndex:sel];
-    }
+    NSInteger sel = [session[@"selectedIndex"] integerValue];
+    if (sel < (NSInteger)_tabManager.allEditors.count)
+        [_tabManager selectTabAtIndex:sel];
 
     // Mark this launch as session-restored. The session save uses this to allow
     // writing an empty session.plist if the user explicitly closed all the
@@ -4711,29 +4717,49 @@ static BOOL groupHasTrailingSep(NSString *ident) {
 }
 
 - (BOOL)recoverBackupsFromUncleanExitSince:(NSDate *)since {
-    return [self _recoverOrphanedBackupsExcluding:[NSSet set] modifiedSince:since] > 0;
+    // Backups session.plist names are not orphans: a session restore opens
+    // them, or will on a later launch if this one did not restore.
+    NSMutableSet<NSString *> *referenced = [NSMutableSet set];
+    NSDictionary *session = [NSDictionary dictionaryWithContentsOfFile:nppSessionPath()];
+    NSArray *tabs = session[@"tabs"];
+    if ([tabs isKindOfClass:[NSArray class]]) {
+        for (NSDictionary *info in tabs) {
+            if (![info isKindOfClass:[NSDictionary class]]) continue;
+            NSString *backup = info[@"backupFilePath"];
+            if ([backup isKindOfClass:[NSString class]]) [referenced addObject:nppCanonicalPath(backup)];
+        }
+    }
+    return [self _recoverOrphanedBackupsExcluding:referenced modifiedSince:since] > 0;
 }
 
-/// Open each backup file in backup/ that `referenced` does not name as a
-/// modified untitled tab called "recovered: <original name>", and claim it, so
-/// the user sees the text and normal session pruning applies from then on.
+/// Open each backup file in backup/ written at or after `since` that neither
+/// `referenced` names nor this process already holds, as a modified untitled
+/// tab called "<original name> (recovered)", and claim it, so the user sees the
+/// text and normal session pruning applies from then on.
 ///
 /// Such orphans are unsaved work no manifest points at: a tab opened after the
-/// last session.plist write in a run that then crashed, or a backup whose
-/// manifest write failed. Backups the user discarded are not among them:
-/// closing a tab deletes its backup (-[TabManager removeEditor:]), and saving
-/// a file deletes its backup too.
+/// last session.plist write in a run that then crashed, or any tab of a crashed
+/// run with session restore off. Backups the user discarded are not among
+/// them: closing a tab, reloading a file and saving all delete the backup.
 ///
-/// `referenced` holds canonical paths (see nppCanonicalPath). `since`
-/// (optional) skips files last written before that date. Returns the number of
-/// tabs opened.
+/// Only runs after an unclean exit, limited to what that run wrote (`since` is
+/// when it started). Older unseen backups (from clean quits with the session
+/// off, or "Don't Save" in builds that left the file behind) are neither
+/// recovered nor pruned: they stay on disk, since nothing tells discarded text
+/// from lost text.
+///
+/// Each recovered file's modification date is reset to now, so it still
+/// qualifies if this run crashes too before its first autosave tick.
+///
+/// `referenced` holds canonical paths (see nppCanonicalPath). Returns the
+/// number of tabs opened.
 - (NSInteger)_recoverOrphanedBackupsExcluding:(NSSet<NSString *> *)referenced
-                                modifiedSince:(nullable NSDate *)since {
+                                modifiedSince:(NSDate *)since {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *backupDir = nppBackupDir();
     NSArray<NSString *> *names = [[fm contentsOfDirectoryAtPath:backupDir error:nil]
                                   sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
-    NSString *format = [[NppLocalizer shared] translate:@"recovered: %@"];
+    NSString *format = [[NppLocalizer shared] translate:@"%@ (recovered)"];
     NSString *marker = [format stringByReplacingOccurrencesOfString:@"%@" withString:@""];
     NSInteger recovered = 0;
 
@@ -4744,7 +4770,7 @@ static BOOL groupHasTrailingSep(NSString *ident) {
 
         NSDictionary *attrs = [fm attributesOfItemAtPath:full error:nil];
         if (![attrs.fileType isEqualToString:NSFileTypeRegular]) continue;
-        if (since && [attrs.fileModificationDate compare:since] == NSOrderedAscending) continue;
+        if ([attrs.fileModificationDate compare:since] == NSOrderedAscending) continue;
         if (attrs.fileSize == 0) {                             // no text to lose
             nppNoteKnownBackup(full);
             continue;
@@ -4762,13 +4788,17 @@ static BOOL groupHasTrailingSep(NSString *ident) {
         NSRange at = [name rangeOfString:@"@" options:NSBackwardsSearch];
         NSString *original = at.location != NSNotFound && at.location > 0
                            ? [name substringToIndex:at.location] : name;
+        // A tab recovered before and lost again keeps a single marker.
+        if (marker.length)
+            original = [original stringByReplacingOccurrencesOfString:marker withString:@""];
+        if (!original.length) original = name;
         ed.filePath = nil;                       // the original path is not recorded
         ed.backupFilePath = full;                // keep backing up into the same file
-        ed.customTabName = (marker.length && [original containsString:marker])
-                         ? original
-                         : [NSString stringWithFormat:format, original];
+        ed.customTabName = [NSString stringWithFormat:format, original];
+        ed.recoveredFromName = original;         // what Save As suggests
         [ed markAsModified];
         nppNoteKnownBackup(full);
+        [fm setAttributes:@{ NSFileModificationDate: [NSDate date] } ofItemAtPath:full error:nil];
         [_tabManager refreshCurrentTabTitle];
         NSLog(@"[Nextpad++] recovered unsaved backup %@", full);
         recovered++;
@@ -4983,7 +5013,10 @@ static void removeMacroFromShortcutsXML(NSString *name) {
 
     NSString *fingerprint = [self _sessionManifestFingerprint];
     if ([fingerprint isEqualToString:sLastManifestFingerprint]) return;
-    if (![self _saveSessionForAllWindows]) return;  // not written: retry next tick
+    _sessionSaveReusesBackups = YES;
+    BOOL written = [self _saveSessionForAllWindows];
+    _sessionSaveReusesBackups = NO;
+    if (!written) return;                            // not written: retry next tick
     // The save itself can assign backup paths (a tab's first backup), so record
     // the state it left behind rather than the one that triggered it.
     sLastManifestFingerprint = [self _sessionManifestFingerprint];
@@ -4991,7 +5024,7 @@ static void removeMacroFromShortcutsXML(NSString *name) {
 
 /// The parts of every session tab that crash recovery depends on: which tabs
 /// exist, in which view and order, their file and backup paths, names, modified
-/// state, language, color and pin. Caret, scroll, folds and bookmarks are left
+/// state, language, read-only, RTL, color and pin. Caret, scroll, folds and bookmarks are left
 /// out; they change constantly and are refreshed by the next write anyway.
 - (NSString *)_sessionManifestFingerprint {
     NSMutableString *fp = [NSMutableString string];
@@ -5001,10 +5034,13 @@ static void removeMacroFromShortcutsXML(NSString *name) {
             NSArray<EditorView *> *eds = mgr.allEditors;
             for (NSInteger i = 0; i < (NSInteger)eds.count; i++) {
                 EditorView *ed = eds[i];
-                [fp appendFormat:@"\x1e%p\x1f%@\x1f%@\x1f%@\x1f%@\x1f%d%d\x1f%ld%d",
+                ScintillaView *sci = ed.scintillaView;
+                [fp appendFormat:@"\x1e%p\x1f%@\x1f%@\x1f%@\x1f%@\x1f%d%d%d%d\x1f%ld%d",
                     ed, ed.filePath ?: @"", ed.backupFilePath ?: @"",
                     ed.customTabName ?: @"", ed.currentLanguage ?: @"",
                     (int)ed.isModified, (int)ed.largeFileMode,
+                    (int)([sci message:SCI_GETREADONLY] != 0),
+                    (int)([sci message:2708] == 2),    // SCI_GETBIDIRECTIONAL == R2L, as saved
                     (long)[mgr.tabBar tabColorAtIndex:i],
                     (int)[mgr.tabBar isTabPinnedAtIndex:i]];
             }
@@ -5135,7 +5171,7 @@ static void removeMacroFromShortcutsXML(NSString *name) {
     EditorView *ed = [self currentEditor];
     if (!ed) return;
     NSSavePanel *panel = [NSSavePanel savePanel];
-    panel.nameFieldStringValue = ed.displayName;
+    panel.nameFieldStringValue = ed.suggestedSaveName;
     [panel beginWithCompletionHandler:^(NSModalResponse r) {
         if (r == NSModalResponseOK) {
             NSError *err;
@@ -8662,7 +8698,7 @@ static NSArray<NSDictionary *> *convertRecordedToXmlFormat(NSArray<NSDictionary 
     panel.title = [[NppLocalizer shared] translate:@"Save a Copy As"];
     if (ed.filePath)
         panel.directoryURL = [NSURL fileURLWithPath:ed.filePath.stringByDeletingLastPathComponent];
-    panel.nameFieldStringValue = ed.displayName;
+    panel.nameFieldStringValue = ed.suggestedSaveName;
     [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse r) {
         if (r != NSModalResponseOK) return;
         NSError *err;
@@ -8841,7 +8877,7 @@ typedef NS_ENUM(NSInteger, NppBatchCloseDecision) {
         } else {
             // Untitled — run modal save panel. Backing out leaves it modified.
             NSSavePanel *sp = [NSSavePanel savePanel];
-            sp.nameFieldStringValue = ed.displayName;
+            sp.nameFieldStringValue = ed.suggestedSaveName;
             if ([sp runModal] == NSModalResponseOK) {
                 NSError *err;
                 [ed saveToPath:sp.URL.path error:&err];
@@ -11173,10 +11209,64 @@ static int64_t _sysctlInt(const char *name) {
     // its tabs and prune away its backups.
     AppDelegate *appDel = (AppDelegate *)NSApp.delegate;
     BOOL terminating = [appDel isKindOfClass:[AppDelegate class]] ? appDel.isTerminating : NO;
+    if (!terminating && [self _otherWindowsRemainOpen]) {
+        // This window's documents are closing for good while the app keeps
+        // running: they leave the session and their backups are pruned. Ask
+        // first, as closing a tab does, and leave the window out of the save.
+        if (![self _resolveUnsavedTabsBeforeWindowClose]) return NO;
+        _windowHasClosed = YES;
+    }
     if (!terminating && [self sessionPersistenceEnabled]) {
         [self saveSessionForAllWindows];
     }
     writeConfigXML();
+    return YES;
+}
+
+/// YES when another window that has not closed would outlive the receiver.
+- (BOOL)_otherWindowsRemainOpen {
+    id appDel = NSApp.delegate;
+    if (![appDel isKindOfClass:[AppDelegate class]]) return NO;
+    for (MainWindowController *mwc in [(AppDelegate *)appDel windowControllers])
+        if (mwc != self && !mwc.windowHasClosed) return YES;
+    return NO;
+}
+
+/// Ask Save / Don't Save / Cancel for each modified document in this window
+/// (with Don't Save All when there are several), then delete the backups of
+/// everything that is closing. Returns NO, leaving every document and backup as
+/// it was, if the user cancelled or a save did not happen.
+- (BOOL)_resolveUnsavedTabsBeforeWindowClose {
+    NSMutableArray<EditorView *> *editors = [NSMutableArray array];
+    for (TabManager *mgr in [self sessionTabManagers])
+        [editors addObjectsFromArray:mgr.allEditors];
+
+    // A clone shares its document with its sibling: ask once per document, and
+    // not at all when the sibling lives on in another window.
+    NSMutableArray<EditorView *> *dirty = [NSMutableArray array];
+    for (EditorView *ed in editors) {
+        if (!ed.isModified) continue;
+        if (ed.cloneSibling && ([dirty containsObject:ed.cloneSibling]
+                                || ![editors containsObject:ed.cloneSibling])) continue;
+        [dirty addObject:ed];
+    }
+
+    BOOL discardAll = NO;
+    for (EditorView *ed in dirty) {
+        if (discardAll) break;
+        switch ([self _promptBatchSaveBeforeClose:ed allowAll:dirty.count > 1]) {
+            case NppBatchCloseCancel:        return NO;
+            case NppBatchCloseSaveAttempted: if (ed.isModified) return NO; break;
+            case NppBatchCloseDiscardAll:    discardAll = YES; break;
+            case NppBatchCloseDiscard:       break;
+        }
+    }
+
+    // Every answer is in, so the window really closes. Saved documents have no
+    // backup any more; delete the rest so discarded text is not recovered later.
+    for (EditorView *ed in editors)
+        if (!ed.cloneSibling || [editors containsObject:ed.cloneSibling])
+            [ed discardBackup];
     return YES;
 }
 

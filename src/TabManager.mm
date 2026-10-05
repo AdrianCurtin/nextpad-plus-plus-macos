@@ -352,7 +352,7 @@
 
 - (void)runSavePanelForEditor:(EditorView *)editor completion:(void(^)(BOOL))completion {
     NSSavePanel *panel = [NSSavePanel savePanel];
-    panel.nameFieldStringValue = editor.displayName;
+    panel.nameFieldStringValue = editor.suggestedSaveName;
     [panel beginWithCompletionHandler:^(NSModalResponse result) {
         if (result == NSModalResponseOK) {
             NSError *err;
