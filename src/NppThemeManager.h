@@ -98,8 +98,9 @@ typedef struct {
 @property (nonatomic, readonly) NSColor *tabTextInactive;
 /// Red used for the unsaved-document floppy (tab bar, Document List).
 @property (nonatomic, readonly) NSColor *unsavedIconTint;
-/// Solid red floppy marking a document with unsaved changes (filled save
-/// glyph tinted for the given background). Cached; falls back to save_off_red.
+/// Red outline floppy marking a document with unsaved changes (the saved
+/// outline save glyph, whole outline tinted for the given background).
+/// Cached; falls back to save_off_red.
 - (nullable NSImage *)unsavedDocumentIconForDarkBackground:(BOOL)dark;
 /// -unsavedDocumentIconForDarkBackground: with the chrome's isDark.
 - (nullable NSImage *)unsavedDocumentIcon;

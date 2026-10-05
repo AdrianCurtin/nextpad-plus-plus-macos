@@ -285,7 +285,7 @@ static CGFloat tabShrinkFloor(_NppTabItem *item) {
     }
 
     // ── Floppy icon ───────────────────────────────────────────────────────────
-    // Unsaved: solid red floppy (Notepad++ unsaved.ico); saved: outline floppy.
+    // Unsaved: same outline floppy as saved, whole outline in the unsaved red.
     NSImage *icon = _isModified ? [TM unsavedDocumentIcon] : toolbarIcon(@"saveFile");
     if (icon) {
         CGFloat sz  = kIconSize * 0.704;
