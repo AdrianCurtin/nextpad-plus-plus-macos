@@ -8217,7 +8217,10 @@ static NSArray<NSDictionary *> *convertRecordedToXmlFormat(NSArray<NSDictionary 
 
 - (void)_userDefineLangsChanged:(NSNotification *)n {
     [self rebuildUDLLanguageMenu];
-    [self updateStatusBar];
+    // Deferred: editors observe the same notification and may run after
+    // this one, so the status bar must read their language once they have
+    // followed a rename or removal.
+    dispatch_async(dispatch_get_main_queue(), ^{ [self updateStatusBar]; });
 }
 
 /// Populate the Language menu with all loaded UDL names.

@@ -88,7 +88,10 @@ static NSString *hexFromColor(NSColor *c) {
     for (NSString *fam in [[NSFontManager sharedFontManager].availableFontFamilies
             sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)])
         [fontPop addItemWithTitle:fam];
+    // A stored font the popup does not list (e.g. a Windows font that is
+    // not installed) is added as an item, so OK writes it back unchanged.
     NSString *curFont = style[@"fontName"] ?: @"";
+    if (curFont.length && ![fontPop itemWithTitle:curFont]) [fontPop insertItemWithTitle:curFont atIndex:1];
     if (curFont.length) [fontPop selectItemWithTitle:curFont];
     [fv addSubview:fontPop];
 
@@ -102,7 +105,8 @@ static NSString *hexFromColor(NSColor *c) {
     for (NSString *s in @[@"",@"5",@"6",@"7",@"8",@"9",@"10",@"11",@"12",@"14",@"16",@"18",@"20",@"22",@"24",@"26",@"28"])
         [sizePop addItemWithTitle:s];
     NSString *curSize = style[@"fontSize"] ?: @"";
-    if ([sizePop itemWithTitle:curSize]) [sizePop selectItemWithTitle:curSize];
+    if (curSize.length && ![sizePop itemWithTitle:curSize]) [sizePop insertItemWithTitle:curSize atIndex:1];
+    if (curSize.length) [sizePop selectItemWithTitle:curSize];
     [fv addSubview:sizePop];
 
     // Bold / Italic / Underline
