@@ -338,6 +338,8 @@
         if ([self _mayBecomeEmpty]) {
             _selectedIndex = -1;
             [_delegate tabManager:self didCloseEditor:editor];
+            if ([_delegate respondsToSelector:@selector(tabManagerDidBecomeEmpty:)])
+                [_delegate tabManagerDidBecomeEmpty:self];
         } else {
             [self addNewTab];
         }
