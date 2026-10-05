@@ -4,8 +4,22 @@
 #import "ScintillaMessages.h"
 #import "NppThemeManager.h"
 
-namespace Scintilla { struct ILexer5; }
-extern "C" Scintilla::ILexer5 *CreateLexer(const char *name);
+// The map shares the tracked editor's Scintilla document (SCI_SETDOCPOINTER),
+// so it must never take keyboard focus: SCI_SETREADONLY is a document
+// property, so the map cannot protect itself without making the editor
+// read-only too. The viewport overlay already swallows mouse input; this
+// content view keeps the map out of the key-view loop and menu targeting.
+@interface _DMMapContentView : SCIContentView
+@end
+@implementation _DMMapContentView
+- (BOOL)acceptsFirstResponder { return NO; }
+@end
+
+@interface _DMMapScintillaView : ScintillaView
+@end
+@implementation _DMMapScintillaView
++ (Class)contentViewClass { return [_DMMapContentView class]; }
+@end
 
 // ─────────────────────────────────────────────────────────────────────────────
 @class _DMViewportOverlay;
@@ -54,6 +68,7 @@ extern "C" Scintilla::ILexer5 *CreateLexer(const char *name);
 
 @implementation DocumentMapPanel {
     ScintillaView      *_mapSci;
+    sptr_t              _mapDoc;       // document shared with _trackedEditor (0 = own empty doc)
     _DMViewportOverlay *_overlay;
     __weak EditorView  *_trackedEditor;
     NSTimer            *_contentDebounce;
@@ -85,7 +100,7 @@ extern "C" Scintilla::ILexer5 *CreateLexer(const char *name);
 // ── Layout ────────────────────────────────────────────────────────────────────
 
 - (void)_buildLayout {
-    _mapSci = [[ScintillaView alloc] initWithFrame:NSZeroRect];
+    _mapSci = [[_DMMapScintillaView alloc] initWithFrame:NSZeroRect];
     _mapSci.translatesAutoresizingMaskIntoConstraints = NO;
     [self addSubview:_mapSci];
     [NSLayoutConstraint activateConstraints:@[
@@ -109,7 +124,8 @@ extern "C" Scintilla::ILexer5 *CreateLexer(const char *name);
 }
 
 - (void)_configureMapSci {
-    [_mapSci message:SCI_SETREADONLY         wParam:1];
+    // No SCI_SETREADONLY: it would mark the shared document read-only.
+    [_mapSci message:SCI_SETMODEVENTMASK     wParam:0];
     for (int m = 0; m < 5; m++)
         [_mapSci message:SCI_SETMARGINWIDTHN wParam:(uptr_t)m lParam:0];
     [_mapSci message:SCI_SETCARETLINEVISIBLE wParam:0];
@@ -119,6 +135,11 @@ extern "C" Scintilla::ILexer5 *CreateLexer(const char *name);
     [_mapSci message:SCI_SETWRAPMODE         wParam:SC_WRAP_NONE];
     [_mapSci message:SCI_STYLESETSIZEFRACTIONAL wParam:STYLE_DEFAULT lParam:400]; // 4pt
     [_mapSci message:SCI_STYLECLEARALL];
+    // Indicators live in the shared document; hide them so the editor's
+    // find marks, smart highlights and spell-check squiggles do not render
+    // with Scintilla's default indicator styles in the map.
+    for (int i = 0; i <= INDICATOR_MAX; i++)
+        [_mapSci message:SCI_INDICSETSTYLE wParam:(uptr_t)i lParam:INDIC_HIDDEN];
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -139,41 +160,26 @@ extern "C" Scintilla::ILexer5 *CreateLexer(const char *name);
                                                        repeats:NO];
 }
 
+// The map views the editor's own document, so text, lexer state, keyword
+// lists and style bytes all come from the editor's lexing; nothing is copied.
+// This only re-attaches when the editor swapped documents (file load/reload
+// creates a fresh document) and refreshes the per-view style colours.
 - (void)_updateMapContent {
+    [self _syncDocument];
     EditorView *ed = _trackedEditor;
-    if (!ed) {
-        [_mapSci message:SCI_SETREADONLY wParam:0];
-        [_mapSci message:SCI_CLEARALL];
-        [_mapSci message:SCI_SETREADONLY wParam:1];
-        [_overlay setNeedsDisplay:YES];
-        return;
-    }
-
-    intptr_t len = [ed.scintillaView message:SCI_GETLENGTH];
-    char *buf = (char *)malloc((size_t)len + 1);
-    if (!buf) return;
-    [ed.scintillaView message:SCI_GETTEXT wParam:(uptr_t)(len + 1) lParam:(sptr_t)buf];
-    [_mapSci message:SCI_SETREADONLY wParam:0];
-    [_mapSci message:SCI_SETTEXT     wParam:0 lParam:(sptr_t)buf];
-    [_mapSci message:SCI_SETREADONLY wParam:1];
-    free(buf);
-
-    NSString *lang = ed.currentLanguage;
-    if (lang.length) {
-        NSDictionary *lexerMap = @{
-            @"c": @"cpp", @"cpp": @"cpp", @"objc": @"cpp", @"swift": @"cpp",
-            @"python": @"python", @"javascript": @"cpp", @"typescript": @"cpp",
-            @"html": @"hypertext", @"xml": @"xml", @"css": @"css",
-            @"bash": @"bash", @"ruby": @"ruby", @"json": @"json",
-            @"sql": @"sql", @"lua": @"lua", @"perl": @"perl",
-        };
-        NSString *lexerName = lexerMap[lang.lowercaseString] ?: lang;
-        Scintilla::ILexer5 *lexer = CreateLexer(lexerName.UTF8String);
-        if (lexer) [_mapSci message:SCI_SETILEXER wParam:0 lParam:(sptr_t)lexer];
-    }
-
-    [self _applyThemeFromEditor:ed];
+    if (ed) [self _applyThemeFromEditor:ed];
     [self _syncScroll];
+    [_overlay setNeedsDisplay:YES];
+}
+
+- (void)_syncDocument {
+    EditorView *ed = _trackedEditor;
+    sptr_t doc = ed ? [ed.scintillaView message:SCI_GETDOCPOINTER] : 0;
+    if (doc == _mapDoc) return;
+    // SCI_SETDOCPOINTER adds a reference to the new document and releases
+    // the old one; 0 gives the map a fresh empty document of its own.
+    [_mapSci message:SCI_SETDOCPOINTER wParam:0 lParam:doc];
+    _mapDoc = doc;
 }
 
 // ── Theme mirroring ───────────────────────────────────────────────────────────
@@ -188,6 +194,10 @@ extern "C" Scintilla::ILexer5 *CreateLexer(const char *name);
         sptr_t fg = [src message:SCI_STYLEGETFORE wParam:(uptr_t)s];
         [_mapSci message:SCI_STYLESETFORE wParam:(uptr_t)s lParam:fg];
         [_mapSci message:SCI_STYLESETBACK wParam:(uptr_t)s lParam:defaultBg];
+        [_mapSci message:SCI_STYLESETBOLD wParam:(uptr_t)s
+                  lParam:[src message:SCI_STYLEGETBOLD wParam:(uptr_t)s]];
+        [_mapSci message:SCI_STYLESETITALIC wParam:(uptr_t)s
+                  lParam:[src message:SCI_STYLEGETITALIC wParam:(uptr_t)s]];
     }
 }
 
@@ -343,6 +353,7 @@ extern "C" Scintilla::ILexer5 *CreateLexer(const char *name);
 
 - (void)_cursorMoved:(NSNotification *)note {
     if (note.object != _trackedEditor) return;
+    [self _syncDocument];
     [self _syncScroll];
     [self _scheduleContentUpdate];
 }
