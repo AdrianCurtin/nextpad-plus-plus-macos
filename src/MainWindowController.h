@@ -33,8 +33,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Crash recovery, run at launch after an unclean exit whatever else opened:
 /// open each backup file written at or after `since` (when the run that did not
-/// exit cleanly started) that session.plist does not name and no open tab holds,
-/// as a "<name> (recovered)" tab. Returns YES if at least one tab was opened.
+/// exit cleanly started) that this run has not already reopened (by session
+/// restore), as a "<name> (recovered)" tab. Returns YES if at least one tab was opened.
 - (BOOL)recoverBackupsFromUncleanExitSince:(NSDate *)since;
 
 /// The receiver's tab managers: primary view plus the horizontal/vertical split

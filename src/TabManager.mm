@@ -277,7 +277,17 @@
     // prune; now that launch recovers unreferenced backups as orphans, a
     // lingering one would bring the discarded text back after a crash. (Moving
     // a tab between views goes through -evictEditor:, not here.)
-    [editor discardBackup];
+    //
+    // A clone sibling that stays open shares this document, so the text is not
+    // discarded. If the sibling has no backup of its own yet (its first tick has
+    // not run), hand it this one instead of deleting the only copy.
+    EditorView *sibling = editor.cloneSibling;
+    if (sibling && editor.backupFilePath.length && !sibling.backupFilePath.length) {
+        sibling.backupFilePath = editor.backupFilePath;
+        editor.backupFilePath = nil;
+    } else {
+        [editor discardBackup];
+    }
 
     // Unregister file presenter so the EditorView can be deallocated.
     // (NSFileCoordinator holds a strong ref to registered presenters.)

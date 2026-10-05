@@ -130,6 +130,11 @@ static BOOL nppIsKnownBackup(NSString *path) {
 // Fingerprint of what the last periodic session.plist write captured; see
 // -_syncSessionManifest. Process-wide because session.plist is.
 static NSString *sLastManifestFingerprint;
+
+// YES once this process has written a session.plist that lists tabs. From then
+// on session.plist describes this run, so an empty tab set must be written too
+// (see the #87 guard in -saveSessionWithTabManagers:activeEditor:).
+static BOOL sWroteSessionTabsThisRun;
 // Forward declarations for shortcuts.xml functions (defined after @implementation)
 static NSString *nppShortcutsPath(void);
 // Non-static so NPPBatchDialog can link against it. Forward-declared here for
@@ -4476,7 +4481,11 @@ static BOOL groupHasTrailingSep(NSString *ident) {
     //   ──────────────────────┼──────────────────────────
     //   YES (restored at boot)| write empty session  → user's close persists
     //   NO  (didn't restore)  | preserve prior plist → original Issue #87 fix
-    if (tabs.count == 0 && !_didRestoreSession) return YES;
+    // The periodic writer (-_syncSessionManifest) means session.plist may
+    // already describe this run's tabs even without a restore. Once it does,
+    // the prior plist is gone and preserving the current one would bring back
+    // files the user has since closed, so the empty set is written as well.
+    if (tabs.count == 0 && !_didRestoreSession && !sWroteSessionTabsThisRun) return YES;
 
     // Resolve the active tab against `tabs`, not against a tab-bar index: with
     // several windows (or a split view) the tab bars each start at 0, so a raw
@@ -4494,6 +4503,8 @@ static BOOL groupHasTrailingSep(NSString *ident) {
         NSLog(@"[Nextpad++] could not write %@ — skipping the backup prune so this "
               @"session's backups survive for manual recovery", nppSessionPath());
         manifestWriteFailed = YES;
+    } else if (tabs.count > 0) {
+        sWroteSessionTabsThisRun = YES;
     }
 
     // Prune stale backup files no longer referenced by any open editor.
@@ -4717,25 +4728,19 @@ static BOOL groupHasTrailingSep(NSString *ident) {
 }
 
 - (BOOL)recoverBackupsFromUncleanExitSince:(NSDate *)since {
-    // Backups session.plist names are not orphans: a session restore opens
-    // them, or will on a later launch if this one did not restore.
-    NSMutableSet<NSString *> *referenced = [NSMutableSet set];
-    NSDictionary *session = [NSDictionary dictionaryWithContentsOfFile:nppSessionPath()];
-    NSArray *tabs = session[@"tabs"];
-    if ([tabs isKindOfClass:[NSArray class]]) {
-        for (NSDictionary *info in tabs) {
-            if (![info isKindOfClass:[NSDictionary class]]) continue;
-            NSString *backup = info[@"backupFilePath"];
-            if ([backup isKindOfClass:[NSString class]]) [referenced addObject:nppCanonicalPath(backup)];
-        }
-    }
-    return [self _recoverOrphanedBackupsExcluding:referenced modifiedSince:since] > 0;
+    return [self _recoverOrphanedBackupsModifiedSince:since] > 0;
 }
 
-/// Open each backup file in backup/ written at or after `since` that neither
-/// `referenced` names nor this process already holds, as a modified untitled
-/// tab called "<original name> (recovered)", and claim it, so the user sees the
-/// text and normal session pruning applies from then on.
+/// Open each backup file in backup/ written at or after `since` that this
+/// process has not already reopened, as a modified untitled tab called
+/// "<original name> (recovered)", and claim it, so the user sees the text and
+/// normal session pruning applies from then on.
+///
+/// What session.plist merely names does not count as reopened. A launch with
+/// file arguments skips the session restore, and its first session write
+/// replaces the old manifest; a backup only that manifest named would then be
+/// referenced by nothing and, the crash marker cleared by the next clean quit,
+/// never recovered.
 ///
 /// Such orphans are unsaved work no manifest points at: a tab opened after the
 /// last session.plist write in a run that then crashed, or any tab of a crashed
@@ -4751,10 +4756,8 @@ static BOOL groupHasTrailingSep(NSString *ident) {
 /// Each recovered file's modification date is reset to now, so it still
 /// qualifies if this run crashes too before its first autosave tick.
 ///
-/// `referenced` holds canonical paths (see nppCanonicalPath). Returns the
-/// number of tabs opened.
-- (NSInteger)_recoverOrphanedBackupsExcluding:(NSSet<NSString *> *)referenced
-                                modifiedSince:(NSDate *)since {
+/// Returns the number of tabs opened.
+- (NSInteger)_recoverOrphanedBackupsModifiedSince:(NSDate *)since {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *backupDir = nppBackupDir();
     NSArray<NSString *> *names = [[fm contentsOfDirectoryAtPath:backupDir error:nil]
@@ -4766,7 +4769,7 @@ static BOOL groupHasTrailingSep(NSString *ident) {
     for (NSString *name in names) {
         if ([name hasPrefix:@"."]) continue;                   // .DS_Store and friends
         NSString *full = [backupDir stringByAppendingPathComponent:name];
-        if ([referenced containsObject:nppCanonicalPath(full)] || nppIsKnownBackup(full)) continue;
+        if (nppIsKnownBackup(full)) continue;          // restored or written by this run
 
         NSDictionary *attrs = [fm attributesOfItemAtPath:full error:nil];
         if (![attrs.fileType isEqualToString:NSFileTypeRegular]) continue;
