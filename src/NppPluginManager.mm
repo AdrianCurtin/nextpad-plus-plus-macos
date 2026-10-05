@@ -1282,6 +1282,7 @@ static intptr_t _npp_run_on_main(intptr_t (^block)(void)) {
             // for icon lookup and re-loads icons on theme change. This handler
             // just hands it the strings.
             int cmdID = (int)wParam;
+            if (cmdID == 0) return 0;  // separator or a FuncItem left without an ID
 
             std::string pluginDirName;
             std::string funcItemName;
