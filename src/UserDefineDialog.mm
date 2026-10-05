@@ -190,7 +190,8 @@ static void addFoldFields(NSBox *box, NSScrollView **oO, NSScrollView **oM, NSSc
 
 - (void)showWithLanguage:(nullable NSString *)n {
     // The window may have been hidden (orderOut) with edits still in the form.
-    [self _commitEdits];
+    // If saving them fails, show the form as it is rather than reloading it.
+    if (![self _commitEdits]) { [self showWindow:nil]; return; }
     NSString *keep = n ?: _cur.name;
     [self showWindow:nil]; [self _rebuildPopup];
     if (keep) [_langPopup selectItemWithTitle:keep];
@@ -1080,12 +1081,15 @@ static NSRange xmlDeclEncodingRange(NSString *s) {
     return vr.location != NSNotFound ? vr : [m rangeAtIndex:2];
 }
 
-/// The encoding `data` declares: UTF-16 when it has a UTF-16 BOM, else the
-/// <?xml encoding="..."?> name, else UTF-8.
+/// The encoding `data` declares: UTF-16 in the byte order of its BOM when
+/// it has one, else the <?xml encoding="..."?> name, else UTF-8. The BOM's
+/// order is returned explicitly (not NSUTF16StringEncoding, which writes
+/// host order) so a big-endian file is written back big-endian; the BOM is
+/// then kept in the decoded text as U+FEFF and written back unchanged.
 static NSStringEncoding UDLDeclaredEncoding(NSData *data) {
     const unsigned char *b = (const unsigned char *)data.bytes;
-    if (data.length >= 2 && ((b[0] == 0xFF && b[1] == 0xFE) || (b[0] == 0xFE && b[1] == 0xFF)))
-        return NSUTF16StringEncoding;
+    if (data.length >= 2 && b[0] == 0xFE && b[1] == 0xFF) return NSUTF16BigEndianStringEncoding;
+    if (data.length >= 2 && b[0] == 0xFF && b[1] == 0xFE) return NSUTF16LittleEndianStringEncoding;
     // Latin-1 maps every byte, so the ASCII prolog is readable whatever follows.
     NSString *head = [[NSString alloc] initWithData:[data subdataWithRange:NSMakeRange(0, MIN(data.length, (NSUInteger)512))]
                                            encoding:NSISOLatin1StringEncoding];
@@ -1365,7 +1369,7 @@ static BOOL isBundledUDLPath(NSString *p) {
 #pragma mark — CRUD
 
 - (void)_createNew:(id)s {
-    [self _commitEdits];
+    if (![self _commitEdits]) return;   // keep the unsaved edits in the form
     NppLocalizer *loc = [NppLocalizer shared];
     NSAlert *a=[[NSAlert alloc]init]; a.messageText=[loc translate:@"Create New Language"]; a.informativeText=[loc translate:@"Enter a name:"];
     NSTextField *inp=[[NSTextField alloc]initWithFrame:NSMakeRect(0,0,250,24)]; inp.placeholderString=[loc translate:@"Language name"];
@@ -1427,7 +1431,7 @@ static BOOL isBundledUDLPath(NSString *p) {
     [self _reloadAndNotify:nm oldName:old]; [self _rebuildPopup]; [_langPopup selectItemWithTitle:nm]; [self _load];
 }
 - (void)_import:(id)s {
-    [self _commitEdits];
+    if (![self _commitEdits]) return;   // keep the unsaved edits in the form
     NSOpenPanel *p=[NSOpenPanel openPanel]; p.allowedContentTypes=@[[UTType typeWithFilenameExtension:@"xml"]];
     if([p runModal]!=NSModalResponseOK)return;
     UserDefinedLang *u=[[UserDefineLangManager shared]importFromPath:p.URL.path];
