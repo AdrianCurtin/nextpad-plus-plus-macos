@@ -4,16 +4,25 @@
 #import "ScintillaMessages.h"
 #import "NppThemeManager.h"
 #import "StyleConfiguratorWindowController.h"
+#import "TabManager.h"
 
 // The map shares the tracked editor's Scintilla document (SCI_SETDOCPOINTER),
 // so it must never take keyboard focus: SCI_SETREADONLY is a document
 // property, so the map cannot protect itself without making the editor
 // read-only too. The viewport overlay already swallows mouse input; this
-// content view keeps the map out of the key-view loop and menu targeting.
+// content view keeps the map out of the key-view loop and menu targeting,
+// and refuses drops: Scintilla's drop path ignores read-only, so a text drag
+// from the editor onto the map would otherwise move text in the document.
+// _configureMapSci also unregisters its drag types; these overrides are the
+// backstop if anything registers them again.
 @interface _DMMapContentView : SCIContentView
 @end
 @implementation _DMMapContentView
 - (BOOL)acceptsFirstResponder { return NO; }
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender { return NSDragOperationNone; }
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender { return NSDragOperationNone; }
+- (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)sender { return NO; }
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender { return NO; }
 @end
 
 @interface _DMMapScintillaView : ScintillaView
@@ -119,6 +128,9 @@
     ]];
     [self _configureMapSci];
 
+    // Files dropped on the map open like files dropped on the editor.
+    [self registerForDraggedTypes:@[NSPasteboardTypeFileURL, NSFilenamesPboardType]];
+
     _overlay = [[_DMViewportOverlay alloc] initWithFrame:NSZeroRect];
     _overlay.translatesAutoresizingMaskIntoConstraints = NO;
     _overlay.panel = self;
@@ -132,6 +144,9 @@
 }
 
 - (void)_configureMapSci {
+    // Not a drop target for text (see _DMMapContentView). File drops are
+    // taken by the panel itself and handed to the editor area.
+    [_mapSci.content unregisterDraggedTypes];
     // No SCI_SETREADONLY: it would mark the shared document read-only.
     [_mapSci message:SCI_SETMODEVENTMASK     wParam:0];
     for (int m = 0; m < 5; m++)
@@ -155,6 +170,38 @@
 - (void)setTrackedEditor:(EditorView *)editor {
     _trackedEditor = editor;
     [self _updateMapContent];
+}
+
+// Informal hook called by MainWindowController on every hide path (title-bar
+// close, toolbar/menu toggle, plugin hide). A hidden map is not re-targeted
+// on tab switches, so drop the shared document now rather than keep a closed
+// tab's document alive. Reopening calls -setTrackedEditor: again.
+- (void)panelWillClose {
+    [self setTrackedEditor:nil];
+}
+
+// ── File drops ────────────────────────────────────────────────────────────────
+//
+// The editor area's NppDropView opens dropped files; it is not an ancestor of
+// the side panel, so forward to the one that hosts the tracked editor.
+
+- (nullable NppDropView *)_editorDropView {
+    for (NSView *v = _trackedEditor.superview; v; v = v.superview)
+        if ([v isKindOfClass:[NppDropView class]]) return (NppDropView *)v;
+    return nil;
+}
+
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+    NppDropView *dv = [self _editorDropView];
+    return dv ? [dv draggingEntered:sender] : NSDragOperationNone;
+}
+
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender {
+    return [self draggingEntered:sender];
+}
+
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+    return [[self _editorDropView] performDragOperation:sender];
 }
 
 // ── Content update (debounced) ────────────────────────────────────────────────
