@@ -107,14 +107,17 @@ typedef struct {
 
 // Toolbar buttons (Classic and Tahoe). Hover/pressed are translucent neutral
 // overlays so they read on any chrome behind the button: the flat Classic bar,
-// the Tahoe pill gradient, or system glass. Toggled-on uses the accent colour so
-// it stays distinct from hover. All step up when Increase Contrast is on.
-@property (nonatomic, readonly) NSColor *toolbarButtonHoverFill;
-@property (nonatomic, readonly) NSColor *toolbarButtonPressedFill;
+// the Tahoe pill gradient, or system glass. Toggled-on is an accent tint drawn
+// over the hover fill, so it stays distinct from hover and never reads weaker.
+// All step up when Increase Contrast is on. `dark` is the polarity of the
+// appearance being drawn (callers resolve it from currentDrawingAppearance).
+- (NSColor *)toolbarButtonHoverFillForDark:(BOOL)dark;
+- (NSColor *)toolbarButtonPressedFillForDark:(BOOL)dark;
 /// Outline around hover/pressed chrome. Clear unless Increase Contrast is on.
-@property (nonatomic, readonly) NSColor *toolbarButtonHoverBorder;
-@property (nonatomic, readonly) NSColor *toolbarButtonToggledFill;
-@property (nonatomic, readonly) NSColor *toolbarButtonToggledBorder;
+- (NSColor *)toolbarButtonHoverBorderForDark:(BOOL)dark;
+/// Accent tint layered over the hover fill for a toggled-on button.
+- (NSColor *)toolbarButtonToggledFillForDark:(BOOL)dark;
+- (NSColor *)toolbarButtonToggledBorderForDark:(BOOL)dark;
 
 // Panels / status bar
 @property (nonatomic, readonly) NSColor *panelBackground;

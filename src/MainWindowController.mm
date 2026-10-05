@@ -1269,9 +1269,16 @@ static NSImage *_customToolbarIcon(NSString *buttonId, NSDictionary *toolbarConf
 // Colours come from NppThemeManager and are translucent overlays, so the
 // highlight reads on whatever is behind the button (flat Classic bar, Tahoe pill
 // gradient). Toggled-on draws first; hover/pressed then layers on top so a
-// toggled button still answers the cursor.
-static void nppDrawToolbarButtonChrome(NSRect bounds, BOOL hovering, BOOL pressed, BOOL toggledOn) {
+// toggled button still answers the cursor. `outline` is NO for pieces drawn
+// inside a parent that already strokes the group outline (All Characters).
+static void nppDrawToolbarButtonChrome(NSRect bounds, BOOL hovering, BOOL pressed,
+                                       BOOL toggledOn, BOOL outline) {
     if (!hovering && !pressed && !toggledOn) return;
+    // Polarity from the appearance being drawn, not the theme manager's cache:
+    // the cache updates asynchronously after a system appearance change.
+    NSAppearanceName match = [NSAppearance.currentDrawingAppearance
+        bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
+    BOOL dark = [match isEqualToString:NSAppearanceNameDarkAqua];
     NppThemeManager *tm = [NppThemeManager shared];
     CGFloat r = nppToolbarCornerR();
     NSBezierPath *fill = [NSBezierPath bezierPathWithRoundedRect:bounds xRadius:r yRadius:r];
@@ -1279,13 +1286,20 @@ static void nppDrawToolbarButtonChrome(NSRect bounds, BOOL hovering, BOOL presse
                                                            xRadius:r yRadius:r];
     border.lineWidth = 1.0;
     if (toggledOn) {
-        [tm.toolbarButtonToggledFill setFill];     [fill fill];
-        [tm.toolbarButtonToggledBorder setStroke]; [border stroke];
+        // Hover-strength neutral base under the accent tint, so the resting
+        // toggled fill always steps further from the bar than hover does, even
+        // with a low-chroma accent such as Graphite.
+        [[tm toolbarButtonHoverFillForDark:dark] setFill];   [fill fill];
+        [[tm toolbarButtonToggledFillForDark:dark] setFill]; [fill fill];
+        if (outline) { [[tm toolbarButtonToggledBorderForDark:dark] setStroke]; [border stroke]; }
     }
     if (pressed || hovering) {
-        [(pressed ? tm.toolbarButtonPressedFill : tm.toolbarButtonHoverFill) setFill];
+        [(pressed ? [tm toolbarButtonPressedFillForDark:dark]
+                  : [tm toolbarButtonHoverFillForDark:dark]) setFill];
         [fill fill];
-        if (!toggledOn) { [tm.toolbarButtonHoverBorder setStroke]; [border stroke]; }
+        if (outline && !toggledOn) {
+            [[tm toolbarButtonHoverBorderForDark:dark] setStroke]; [border stroke];
+        }
     }
 }
 
@@ -1312,9 +1326,15 @@ static void nppDrawToolbarButtonChrome(NSRect bounds, BOOL hovering, BOOL presse
                           NSTrackingInVisibleRect)
                    owner:self userInfo:nil];
         [self addTrackingArea:ta];
+        // Toggled-on chrome uses the accent colour; repaint when it changes.
+        [[NSNotificationCenter defaultCenter] addObserver:self
+            selector:@selector(_nppSystemColorsChanged:)
+                name:NSSystemColorsDidChangeNotification object:nil];
     }
     return self;
 }
+
+- (void)_nppSystemColorsChanged:(NSNotification *)n { [self setNeedsDisplay:YES]; }
 
 - (void)mouseEntered:(NSEvent *)event { _hovering = YES;  [self setNeedsDisplay:YES]; }
 - (void)mouseExited:(NSEvent *)event  { _hovering = NO;   [self setNeedsDisplay:YES]; }
@@ -1337,7 +1357,7 @@ static void nppDrawToolbarButtonChrome(NSRect bounds, BOOL hovering, BOOL presse
 - (BOOL)_nppShowsPressed { return self.isHighlighted && self.isEnabled; }
 
 - (void)drawRect:(NSRect)dirtyRect {
-    nppDrawToolbarButtonChrome(self.bounds, [self _nppShowsHover], [self _nppShowsPressed], NO);
+    nppDrawToolbarButtonChrome(self.bounds, [self _nppShowsHover], [self _nppShowsPressed], NO, YES);
     if (self.image) {
         [self.image drawInRect:NSInsetRect(self.bounds, 1, 1)
                       fromRect:NSZeroRect
@@ -1350,7 +1370,7 @@ static void nppDrawToolbarButtonChrome(NSRect bounds, BOOL hovering, BOOL presse
 
 @end
 
-// ── Toggle toolbar button: on/off with blue highlight or desaturation ────────
+// ── Toggle toolbar button: on/off with accent highlight or desaturation ──────
 @interface NppToggleToolbarButton : NppToolbarButton
 @property (nonatomic) BOOL toggledOn;
 @property (nonatomic) BOOL useBlueHighlight; // YES = panel style (accent bg), NO = desaturate when off
@@ -1362,7 +1382,7 @@ static void nppDrawToolbarButtonChrome(NSRect bounds, BOOL hovering, BOOL presse
     // Active-toggle: persistent accent background (panel style), with hover and
     // pressed layered on top.
     nppDrawToolbarButtonChrome(self.bounds, [self _nppShowsHover], [self _nppShowsPressed],
-                               self.toggledOn && self.useBlueHighlight);
+                               self.toggledOn && self.useBlueHighlight, YES);
 
     // Desaturation style: OFF = greyed out (alpha 0.30), ON = normal
     CGFloat alpha = 1.0;
@@ -1386,7 +1406,7 @@ static void nppDrawToolbarButtonChrome(NSRect bounds, BOOL hovering, BOOL presse
 @interface _FlatImgButton : NSButton @end
 @implementation _FlatImgButton
 - (void)drawRect:(NSRect)dirtyRect {
-    nppDrawToolbarButtonChrome(self.bounds, NO, self.isHighlighted, NO);
+    nppDrawToolbarButtonChrome(self.bounds, NO, self.isHighlighted, NO, NO);
     if (self.image)
         [self.image drawInRect:NSInsetRect(self.bounds, 1, 1)
                       fromRect:NSZeroRect
@@ -1401,7 +1421,7 @@ static void nppDrawToolbarButtonChrome(NSRect bounds, BOOL hovering, BOOL presse
 @interface _DropArrowButton : NSButton @end
 @implementation _DropArrowButton
 - (void)drawRect:(NSRect)dirtyRect {
-    nppDrawToolbarButtonChrome(self.bounds, NO, self.isHighlighted, NO);
+    nppDrawToolbarButtonChrome(self.bounds, NO, self.isHighlighted, NO, NO);
     static NSDictionary *attrs;
     if (!attrs)
         attrs = @{ NSFontAttributeName:            [NSFont systemFontOfSize:14],
@@ -1432,9 +1452,13 @@ static void nppDrawToolbarButtonChrome(NSRect bounds, BOOL hovering, BOOL presse
                           NSTrackingInVisibleRect)
                    owner:self userInfo:nil];
         [self addTrackingArea:ta];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+            selector:@selector(_nppSystemColorsChanged:)
+                name:NSSystemColorsDidChangeNotification object:nil];
     }
     return self;
 }
+- (void)_nppSystemColorsChanged:(NSNotification *)n { [self setNeedsDisplay:YES]; }
 - (void)setToggledOn:(BOOL)toggledOn {
     if (_toggledOn == toggledOn) return;
     _toggledOn = toggledOn;
@@ -1448,7 +1472,7 @@ static void nppDrawToolbarButtonChrome(NSRect bounds, BOOL hovering, BOOL presse
     [self setNeedsDisplay:YES];
 }
 - (void)drawRect:(NSRect)dirty {
-    nppDrawToolbarButtonChrome(self.bounds, _hovering, NO, _toggledOn);
+    nppDrawToolbarButtonChrome(self.bounds, _hovering, NO, _toggledOn, YES);
     [super drawRect:dirty];
 }
 @end
@@ -1755,7 +1779,7 @@ static NSArray<NSArray *> *toolbarDescriptors() {
 static NSSet *desatToggleIdents(void) {
     return [NSSet setWithObjects:kTBSyncV, kTBSyncH, kTBIndentGuide, kTBMonitor, nil];
 }
-// Panel toggle buttons — these get NppToggleToolbarButton with blue highlight
+// Panel toggle buttons — these get NppToggleToolbarButton with accent highlight
 static NSSet *panelToggleIdents(void) {
     return [NSSet setWithObjects:kTBWrap, kTBUDL, kTBDocMap, kTBDocList, kTBFuncList, kTBFileBrowser, nil];
 }
@@ -1983,7 +2007,7 @@ static void _nppTahoeRoundEditorCard(NSView *container, NSView *content) {
     NppToggleToolbarButton *_tbUDL, *_tbDocMap, *_tbDocList, *_tbFuncList, *_tbFileBrowser;
     NppToggleToolbarButton *_tbMonitor;
     NppToolbarButton *_tbStartRecord, *_tbStopRecord, *_tbPlayRecord, *_tbPlayRecordM, *_tbSaveRecord;
-    _AllCharsHoverGroup *_tbAllCharsHoverGroup;  // dark-mode toggle-on bg painter
+    _AllCharsHoverGroup *_tbAllCharsHoverGroup;  // toggle-on bg painter
     NSButton *_tbAllChars;  // pilcrow button — cached so _darkModeChanged: can refresh its image
 
     // Plugin toolbar icons: array of @{@"id": identifier, @"icon": NSImage, @"tooltip": NSString, @"cmdID": @(int)}
@@ -3527,7 +3551,7 @@ static BOOL groupHasTrailingSep(NSString *ident) {
     NSView *outer = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, totalW, kBtnSize)];
     CGFloat x = 0;
 
-    // Word Wrap — toggle with blue highlight
+    // Word Wrap — toggle with accent highlight
     NppToggleToolbarButton *wrapBtn = [[NppToggleToolbarButton alloc]
         initWithFrame:NSMakeRect(x, 0, kBtnSize, kBtnSize)];
     wrapBtn.image   = nppToolbarIcon(@"wrap");
@@ -3643,7 +3667,7 @@ static BOOL groupHasTrailingSep(NSString *ident) {
     _tbIndentGuide.toggledOn = _showIndentGuides;
     [_tbIndentGuide setNeedsDisplay:YES];
 
-    // Word Wrap (blue highlight). Read kPrefWordWrap directly rather
+    // Word Wrap (accent highlight). Read kPrefWordWrap directly rather
     // than the focused editor's wordWrapEnabled to avoid a notification
     // observer-order race: when the user toggles the Preferences > Editor
     // checkbox, prefChanged: posts NPPPreferencesChanged and MWC's
@@ -3657,7 +3681,7 @@ static BOOL groupHasTrailingSep(NSString *ident) {
     _tbWrap.toggledOn = [[NSUserDefaults standardUserDefaults] boolForKey:kPrefWordWrap];
     [_tbWrap setNeedsDisplay:YES];
 
-    // Panel toggles (blue highlight when panel is visible)
+    // Panel toggles (accent highlight when panel is visible)
     _tbDocMap.toggledOn      = _docMapPanel && [_sidePanelHost hasPanel:_docMapPanel];
     _tbDocList.toggledOn     = _docListPanel && [_sidePanelHost hasPanel:_docListPanel];
     _tbFuncList.toggledOn    = _funcListPanel && [_sidePanelHost hasPanel:(NSView *)_funcListPanel];
@@ -3668,7 +3692,7 @@ static BOOL groupHasTrailingSep(NSString *ident) {
     [_tbFileBrowser setNeedsDisplay:YES];
     // UDL doesn't toggle a panel — leave as-is
 
-    // All-Characters group (dark-mode persistent black bg when on). State
+    // All-Characters group (persistent accent bg when on). State
     // derives from Scintilla so it stays correct on tab switch.
     if (_tbAllCharsHoverGroup) {
         ScintillaView *acSci = [self currentEditor].scintillaView;

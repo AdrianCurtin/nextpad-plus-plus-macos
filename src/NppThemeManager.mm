@@ -309,43 +309,45 @@ static NSDictionary<NSString *, NSString *> *toolbarIconMapping(void) {
 
 // ── Toolbar Button Colors ────────────────────────────────────────────────────
 // Neutral overlays (black on light, white on dark) rather than fixed fills. A
-// fixed dark fill such as #2E2E2E sits on the #282828 macOS 26+ dark toolbar at
-// 1.09:1 and disappears; an overlay keeps the same step against the Classic bar
-// and the Tahoe pill gradient alike.
+// fixed dark fill such as #2E2E2E sits on the #282828 dark toolbar (measured on
+// macOS 27) at 1.09:1 and disappears; an overlay keeps the same step against
+// the Classic bar and the Tahoe pill gradient alike.
 
 static BOOL _nppIncreaseContrast(void) {
     return NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast;
 }
 
-- (NSColor *)toolbarButtonHoverFill {
+- (NSColor *)toolbarButtonHoverFillForDark:(BOOL)dark {
     BOOL hc = _nppIncreaseContrast();
-    return _cachedIsDark ? [NSColor colorWithWhite:1.0 alpha:hc ? 0.20 : 0.12]
-                         : [NSColor colorWithWhite:0.0 alpha:hc ? 0.16 : 0.10];
+    return dark ? [NSColor colorWithWhite:1.0 alpha:hc ? 0.20 : 0.12]
+                : [NSColor colorWithWhite:0.0 alpha:hc ? 0.16 : 0.10];
 }
 
-- (NSColor *)toolbarButtonPressedFill {
+- (NSColor *)toolbarButtonPressedFillForDark:(BOOL)dark {
     BOOL hc = _nppIncreaseContrast();
-    return _cachedIsDark ? [NSColor colorWithWhite:1.0 alpha:hc ? 0.30 : 0.20]
-                         : [NSColor colorWithWhite:0.0 alpha:hc ? 0.26 : 0.18];
+    return dark ? [NSColor colorWithWhite:1.0 alpha:hc ? 0.30 : 0.20]
+                : [NSColor colorWithWhite:0.0 alpha:hc ? 0.26 : 0.18];
 }
 
-- (NSColor *)toolbarButtonHoverBorder {
+- (NSColor *)toolbarButtonHoverBorderForDark:(BOOL)dark {
     if (!_nppIncreaseContrast()) return [NSColor clearColor];
-    return _cachedIsDark ? [NSColor colorWithWhite:1.0 alpha:0.45]
-                         : [NSColor colorWithWhite:0.0 alpha:0.40];
+    return dark ? [NSColor colorWithWhite:1.0 alpha:0.45]
+                : [NSColor colorWithWhite:0.0 alpha:0.40];
 }
 
-- (NSColor *)toolbarButtonToggledFill {
-    // Resolved at draw time, so it follows the user's accent colour.
+- (NSColor *)toolbarButtonToggledFillForDark:(BOOL)dark {
+    // Resolved at draw time, so it follows the user's accent colour. Drawn over
+    // the hover fill: every system accent is lighter than the dark hover fill
+    // and darker than the light one, so the tint always adds to the step.
     BOOL hc = _nppIncreaseContrast();
     return [NSColor.controlAccentColor colorWithAlphaComponent:
-            _cachedIsDark ? (hc ? 0.42 : 0.30) : (hc ? 0.24 : 0.16)];
+            dark ? (hc ? 0.42 : 0.30) : (hc ? 0.28 : 0.20)];
 }
 
-- (NSColor *)toolbarButtonToggledBorder {
+- (NSColor *)toolbarButtonToggledBorderForDark:(BOOL)dark {
     BOOL hc = _nppIncreaseContrast();
     return [NSColor.controlAccentColor colorWithAlphaComponent:
-            hc ? 1.0 : (_cachedIsDark ? 0.70 : 0.55)];
+            hc ? 1.0 : (dark ? 0.70 : 0.55)];
 }
 
 // ── Panel / Status Bar ───────────────────────────────────────────────────────
