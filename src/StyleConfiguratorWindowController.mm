@@ -530,7 +530,6 @@ static BOOL _widgetHasAttr(NSString *xml, NSString *styleName, NSString *attr, N
 }
 
 - (void)commitLexers:(NSArray<NPPLexer *> *)lexers themeName:(NSString *)themeName {
-    BOOL themeChanged = ![themeName isEqualToString:_activeThemeName];
     _activeThemeName = themeName;  // Set BEFORE preview so applyThemeColors reads the correct theme name
     [self previewLexers:lexers];
 
@@ -587,10 +586,13 @@ static BOOL _widgetHasAttr(NSString *xml, NSString *styleName, NSString *attr, N
     // Write changes back to the XML file (selective update, not full rewrite).
     [self _writeOverridesToXML:overrides themeName:themeName];
 
-    // A theme that just became active gets newer model entries. The overrides
-    // above were taken against the file as it was, and the merge only adds
-    // what was missing, so reload the merged file with the same overrides.
-    if (themeChanged && [self _updateUserThemeFromModel:themeName]) {
+    // The committed theme is the active one: give it newer model entries. This
+    // runs on every commit, because a Style Configurator preview has already
+    // set _activeThemeName, so "did the theme change" cannot be told here; the
+    // updater checks each path once per run, so repeat commits cost nothing.
+    // The overrides above were taken against the file as it was, and the merge
+    // only adds what was missing, so reload the merged file with them.
+    if ([self _updateUserThemeFromModel:themeName]) {
         NSMutableArray<NPPLexer *> *merged = [[self lexersForTheme:themeName] mutableCopy];
         [self _applyUserOverrides:overrides to:merged];
         [self previewLexers:merged];
