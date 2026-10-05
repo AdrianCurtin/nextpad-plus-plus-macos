@@ -197,8 +197,6 @@ static NSString *modelLexerID(NSString *themeID) {
     NSString *userPath = [_userThemesDir() stringByAppendingPathComponent:
                           [themeName stringByAppendingPathExtension:@"xml"]];
     if ([[NSFileManager defaultManager] fileExistsAtPath:userPath]) {
-        // Add entries from a newer stylers.model.xml, as Notepad++ does for the active theme.
-        NppUpdateUserThemeFromModel(userPath);
         themeURL = [NSURL fileURLWithPath:userPath];
     } else {
         themeURL = [[NSBundle mainBundle] URLForResource:themeName
@@ -324,12 +322,24 @@ static NSString *_userThemesDir(void) {
     }
 }
 
+/// Merge newer stylers.model.xml entries into the user's copy of a theme that
+/// is becoming the active one. Notepad++ does this for the active theme only,
+/// so previews (lexersForTheme) never touch theme files. Returns YES when the
+/// file changed.
+- (BOOL)_updateUserThemeFromModel:(NSString *)themeName {
+    if (!themeName.length || [themeName isEqualToString:kDefaultThemeName]) return NO;
+    NSString *userPath = [_userThemesDir() stringByAppendingPathComponent:
+                          [themeName stringByAppendingPathExtension:@"xml"]];
+    return NppUpdateUserThemeFromModel(userPath);
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 - (void)loadFromDefaults {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     NSString *savedTheme = [ud stringForKey:kNSDefaultsThemeKey] ?: kDefaultThemeName;
     _activeThemeName = savedTheme;
+    [self _updateUserThemeFromModel:savedTheme];
 
     // Load theme (model + XML merge)
     NSMutableArray<NPPLexer *> *base = [[self lexersForTheme:savedTheme] mutableCopy];
@@ -392,6 +402,7 @@ static NSString *_userThemesDir(void) {
 }
 
 - (void)commitLexers:(NSArray<NPPLexer *> *)lexers themeName:(NSString *)themeName {
+    BOOL themeChanged = ![themeName isEqualToString:_activeThemeName];
     _activeThemeName = themeName;  // Set BEFORE preview so applyThemeColors reads the correct theme name
     [self previewLexers:lexers];
 
@@ -443,6 +454,15 @@ static NSString *_userThemesDir(void) {
 
     // Write changes back to the XML file (selective update, not full rewrite).
     [self _writeOverridesToXML:overrides themeName:themeName];
+
+    // A theme that just became active gets newer model entries. The overrides
+    // above were taken against the file as it was, and the merge only adds
+    // what was missing, so reload the merged file with the same overrides.
+    if (themeChanged && [self _updateUserThemeFromModel:themeName]) {
+        NSMutableArray<NPPLexer *> *merged = [[self lexersForTheme:themeName] mutableCopy];
+        [self _applyUserOverrides:overrides to:merged];
+        [self previewLexers:merged];
+    }
 }
 
 /// Selectively update changed style attributes in the theme/stylers XML file.
