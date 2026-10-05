@@ -2,6 +2,7 @@
 #import "NppPaths.h"
 #import "PreferencesWindowController.h"
 #import "NppLocalizer.h"
+#import "NppThemeManager.h"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - NPPStyleEntry
@@ -76,6 +77,11 @@ static NSString *hexFromColor(NSColor *c) {
 static NSString *const kNSDefaultsStyleKey  = @"NPPStyleOverrides";
 static NSString *const kNSDefaultsThemeKey  = @"NPPActiveTheme";
 static NSString *const kDefaultThemeName    = @"Default (stylers.xml)";
+// Remembered theme per appearance (#366, #370). The active theme (NPPActiveTheme)
+// follows whichever of these matches NppThemeManager.isDark.
+static NSString *const kNSDefaultsLightThemeKey = @"NPPLightTheme";
+static NSString *const kNSDefaultsDarkThemeKey  = @"NPPDarkTheme";
+static NSString *const kDefaultDarkThemeName    = @"DarkModeDefault";
 
 /// Mapping: theme/model lexer ID aliases.
 /// Some theme XML files use "c" while the model uses "cpp"; merge into "cpp".
@@ -101,6 +107,22 @@ static NSString *modelLexerID(NSString *themeID) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{ s = [NPPStyleStore new]; });
     return s;
+}
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        // Single owner of "editor theme follows appearance". Fires for Auto
+        // (system flip) and for explicit Light/Dark changes in Preferences.
+        [[NSNotificationCenter defaultCenter]
+            addObserver:self selector:@selector(_darkModeChanged:)
+                   name:NPPDarkModeChangedNotification object:nil];
+    }
+    return self;
+}
+
+- (void)_darkModeChanged:(NSNotification *)n {
+    [self syncThemeWithAppearance];
 }
 
 // ── XML parsing ──────────────────────────────────────────────────────────────
@@ -431,6 +453,10 @@ static NSString *_userThemesDir(void) {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     [ud setObject:overrides forKey:kNSDefaultsStyleKey];
     [ud setObject:themeName forKey:kNSDefaultsThemeKey];
+    // Remember this theme for the current appearance (#366) so the next
+    // light/dark flip restores it instead of reverting to the default.
+    [ud setObject:themeName forKey:[NppThemeManager shared].isDark ? kNSDefaultsDarkThemeKey
+                                                                   : kNSDefaultsLightThemeKey];
 
     // Legacy keys for backward compat
     [ud setObject:[@"#" stringByAppendingString:hexFromColor(self.globalFg)] forKey:kPrefStyleFg];
@@ -440,6 +466,51 @@ static NSString *_userThemesDir(void) {
 
     // Write changes back to the XML file (selective update, not full rewrite).
     [self _writeOverridesToXML:overrides themeName:themeName];
+}
+
+// ── Light / dark theme slots ──────────────────────────────────────────────────
+
+- (NSString *)themeNameForDarkAppearance:(BOOL)dark {
+    NSString *name = [[NSUserDefaults standardUserDefaults]
+        stringForKey:dark ? kNSDefaultsDarkThemeKey : kNSDefaultsLightThemeKey];
+    return name.length ? name : (dark ? kDefaultDarkThemeName : kDefaultThemeName);
+}
+
+/// YES if the theme's Default Style background is dark (luminance < 0.5).
+- (BOOL)_themeIsDark:(NSString *)themeName {
+    NPPLexer *g = nil;
+    for (NPPLexer *lex in [self lexersForTheme:themeName])
+        if ([lex.lexerID isEqualToString:@"global"]) { g = lex; break; }
+    NPPStyleEntry *e = [g styleForID:32] ?: [g styleForName:@"Default Style"];
+    NSColor *bg = [e.bgColor colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    if (!bg) return NO;
+    CGFloat lum = 0.2126 * bg.redComponent + 0.7152 * bg.greenComponent + 0.0722 * bg.blueComponent;
+    return lum < 0.5;
+}
+
+/// One-time migration for builds that kept a single NPPActiveTheme: file the
+/// saved theme under the appearance it suits, so a light theme is not forced
+/// onto a dark appearance (or vice versa). The other slot keeps its default.
+- (void)_seedAppearanceSlotsIfNeeded {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    if ([ud objectForKey:kNSDefaultsLightThemeKey] || [ud objectForKey:kNSDefaultsDarkThemeKey]) return;
+    NSString *active = [ud stringForKey:kNSDefaultsThemeKey];
+    if (!active.length || ![self.availableThemeNames containsObject:active]) return;
+    [ud setObject:active forKey:[self _themeIsDark:active] ? kNSDefaultsDarkThemeKey
+                                                           : kNSDefaultsLightThemeKey];
+}
+
+- (void)syncThemeWithAppearance {
+    if (!_lexers.count) [self loadFromDefaults];
+    [self _seedAppearanceSlotsIfNeeded];
+
+    BOOL dark = [NppThemeManager shared].isDark;
+    NSString *target = [self themeNameForDarkAppearance:dark];
+    if (![self.availableThemeNames containsObject:target])  // theme file removed
+        target = dark ? kDefaultDarkThemeName : kDefaultThemeName;
+    if ([_activeThemeName isEqualToString:target]) return;
+
+    [self commitLexers:[self lexersForTheme:target] themeName:target];
 }
 
 /// Selectively update changed style attributes in the theme/stylers XML file.
