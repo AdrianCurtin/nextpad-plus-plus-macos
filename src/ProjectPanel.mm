@@ -471,7 +471,11 @@ static void _PPCollectFiles(_ProjectItem *item, NSMutableArray<NSString *> *out)
     _outlineView.backgroundColor = bg;
     _scrollView.backgroundColor  = bg;
 
-    _outlineView.appearance = [NppThemeManager appearanceForBackground:bg];
+    // The whole panel body (tree, separator and the 1|2|3 workspace selector)
+    // is painted with the theme background, so drive the appearance from it
+    // for the whole panel. Pinning only the outline left the selector on the
+    // chrome appearance: light-on-light, invisible under dark chrome.
+    self.appearance = [NppThemeManager appearanceForBackground:bg];
 
     [_outlineView reloadData];
 }
