@@ -55,6 +55,8 @@ static NSDictionary<NSString *, NSString *> *toolbarIconMapping(void) {
 
 @implementation NppThemeManager {
     BOOL _cachedIsDark;
+    NSImage *_unsavedIconLight;   // -unsavedDocumentIconForDarkBackground: cache
+    NSImage *_unsavedIconDark;
 }
 
 @synthesize appearanceStyle = _appearanceStyle;
@@ -106,6 +108,8 @@ static NSDictionary<NSString *, NSString *> *toolbarIconMapping(void) {
 }
 
 - (void)_recalcIsDark {
+    _unsavedIconLight = nil;
+    _unsavedIconDark  = nil;
     switch (_mode) {
         case NppDarkModeLight: _cachedIsDark = NO; break;
         case NppDarkModeDark:  _cachedIsDark = YES; break;
@@ -277,9 +281,49 @@ static NSDictionary<NSString *, NSString *> *toolbarIconMapping(void) {
 
 // Unsaved-document marker. Same reds as the save_off_red toolbar glyph
 // (light 0xE90014, dark 0xFF7369) so the whole family reads as one colour.
+static NSColor *unsavedTintForDark(BOOL dark) {
+    return dark ? [NSColor colorWithRed:0xFF/255.0 green:0x73/255.0 blue:0x69/255.0 alpha:1]
+                : [NSColor colorWithRed:0xE9/255.0 green:0x00/255.0 blue:0x14/255.0 alpha:1];
+}
+
 - (NSColor *)unsavedIconTint {
-    return _cachedIsDark ? [NSColor colorWithRed:0xFF/255.0 green:0x73/255.0 blue:0x69/255.0 alpha:1]
-                         : [NSColor colorWithRed:0xE9/255.0 green:0x00/255.0 blue:0x14/255.0 alpha:1];
+    return unsavedTintForDark(_cachedIsDark);
+}
+
+- (nullable NSImage *)unsavedDocumentIconForDarkBackground:(BOOL)dark {
+    // The filled Fluent save glyph, painted solid in the unsaved tint. The
+    // outline save_off_red only colours its thin label slot, which shrinks to
+    // well under a pixel at tab / list size and reads as the same grey floppy
+    // as a saved document. A solid red floppy is what Notepad++ shows
+    // (tabbar/unsaved.ico) and stays distinct in both light and dark.
+    // Cached per background (tabs redraw often); cleared in -_recalcIsDark.
+    NSImage *cached = dark ? _unsavedIconDark : _unsavedIconLight;
+    if (cached) return cached;
+    NSString *base = dark ? @"icons/dark/toolbar" : @"icons/light/toolbar";
+    NSString *path = [[NSBundle mainBundle] pathForResource:@"save_off" ofType:@"png"
+                                               inDirectory:[base stringByAppendingPathComponent:@"filled"]];
+    NSImage *glyph = path ? [[NSImage alloc] initWithContentsOfFile:path] : nil;
+    NSImage *icon;
+    if (glyph) {
+        NSColor *tint = unsavedTintForDark(dark);
+        icon = [NSImage imageWithSize:glyph.size flipped:NO drawingHandler:^BOOL(NSRect r) {
+            [glyph drawInRect:r fromRect:NSZeroRect
+                    operation:NSCompositingOperationSourceOver fraction:1.0];
+            [tint setFill];
+            NSRectFillUsingOperation(r, NSCompositingOperationSourceAtop);
+            return YES;
+        }];
+    } else {
+        NSString *red = [[NSBundle mainBundle] pathForResource:@"save_off_red" ofType:@"png"
+                                                  inDirectory:[base stringByAppendingPathComponent:@"regular"]];
+        icon = red ? [[NSImage alloc] initWithContentsOfFile:red] : nil;
+    }
+    if (dark) _unsavedIconDark = icon; else _unsavedIconLight = icon;
+    return icon;
+}
+
+- (nullable NSImage *)unsavedDocumentIcon {
+    return [self unsavedDocumentIconForDarkBackground:_cachedIsDark];
 }
 
 - (NSColor *)dividerDark {
@@ -360,28 +404,6 @@ static NSDictionary<NSString *, NSString *> *toolbarIconMapping(void) {
     NSString *path = [[NSBundle mainBundle] pathForResource:fileName ofType:@"png"
                                                inDirectory:dir];
     return path ? [[NSImage alloc] initWithContentsOfFile:path] : nil;
-}
-
-- (nullable NSImage *)unsavedDocumentIcon {
-    // The filled Fluent save glyph, painted solid in -unsavedIconTint. The
-    // outline save_off_red only colours its thin label slot, which shrinks to
-    // well under a pixel at tab / list size and reads as the same grey floppy
-    // as a saved document. A solid red floppy is what Notepad++ shows
-    // (tabbar/unsaved.ico) and stays distinct in both light and dark.
-    NSString *dir  = [self.toolbarIconDir.stringByDeletingLastPathComponent
-                      stringByAppendingPathComponent:@"filled"];
-    NSString *path = [[NSBundle mainBundle] pathForResource:@"save_off" ofType:@"png"
-                                               inDirectory:dir];
-    NSImage *glyph = path ? [[NSImage alloc] initWithContentsOfFile:path] : nil;
-    if (!glyph) return [self toolbarIconNamed:@"saveFileRed"];
-    NSColor *tint = self.unsavedIconTint;
-    return [NSImage imageWithSize:glyph.size flipped:NO drawingHandler:^BOOL(NSRect r) {
-        [glyph drawInRect:r fromRect:NSZeroRect
-                operation:NSCompositingOperationSourceOver fraction:1.0];
-        [tint setFill];
-        NSRectFillUsingOperation(r, NSCompositingOperationSourceAtop);
-        return YES;
-    }];
 }
 
 - (nullable NSImage *)tabbarIconNamed:(NSString *)name {

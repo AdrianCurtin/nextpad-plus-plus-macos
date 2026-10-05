@@ -158,6 +158,10 @@ static void _docFields(EditorView *ed, NSString **outName,
     [[NSNotificationCenter defaultCenter]
         addObserver:self selector:@selector(_themeChanged:)
                name:@"NPPPreferencesChanged" object:nil];
+    // Auto-mode light/dark switches re-tint the unsaved floppy.
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self selector:@selector(_themeChanged:)
+               name:NPPDarkModeChangedNotification object:nil];
 }
 
 - (void)_applyTheme {
@@ -328,6 +332,8 @@ static void _docFields(EditorView *ed, NSString **outName,
         }
         cv.toolTip = fullTip;
         NppThemeManager *tm = [NppThemeManager shared];
+        // Chrome-based tint for now. Once the list follows the theme background
+        // (#398, _bgIsDark), use -unsavedDocumentIconForDarkBackground:_bgIsDark.
         cv.imageView.image = ed.isModified ? [tm unsavedDocumentIcon]
                                            : [tm toolbarIconNamed:@"saveFile"];
         cv.textField.stringValue = name;
