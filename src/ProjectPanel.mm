@@ -471,8 +471,7 @@ static void _PPCollectFiles(_ProjectItem *item, NSMutableArray<NSString *> *out)
     _outlineView.backgroundColor = bg;
     _scrollView.backgroundColor  = bg;
 
-    _outlineView.appearance = [NSAppearance appearanceNamed:
-        [NppThemeManager isDarkColor:bg] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    _outlineView.appearance = [NppThemeManager appearanceForBackground:bg];
 
     [_outlineView reloadData];
 }

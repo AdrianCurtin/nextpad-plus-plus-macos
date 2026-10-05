@@ -81,8 +81,7 @@ static const NSUInteger kMaxHistory = 30;
     // Pin the table (and scroller) appearance to the theme background, not the
     // chrome: otherwise dark chrome over a light theme draws the unfocused
     // selection in dark-mode grey under theme-black text.
-    _scrollView.appearance = [NSAppearance appearanceNamed:
-        [NppThemeManager isDarkColor:bg] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    _scrollView.appearance = [NppThemeManager appearanceForBackground:bg];
     [_tableView reloadData];
 }
 

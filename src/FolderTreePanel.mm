@@ -329,8 +329,7 @@ static _FTPanelButton *_panelBtn(NSString *iconName, NSString *tip, id target, S
     // the theme background: dark bg → DarkAqua so arrows are drawn white;
     // light bg → Aqua so arrows are drawn dark. Set on the scroll view so both
     // scrollers follow too (they otherwise inherit the chrome appearance).
-    _scrollView.appearance = [NSAppearance appearanceNamed:
-        _bgIsDark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    _scrollView.appearance = [NppThemeManager appearanceForBackground:bg];
 
     // Reload so every visible cell picks up the new text color immediately.
     [_outlineView reloadData];

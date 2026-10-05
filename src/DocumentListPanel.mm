@@ -180,8 +180,7 @@ static void _docFields(EditorView *ed, NSString **outName,
     // Pin the scroll view (header, table, scrollers) to the theme brightness,
     // as Character / Folder as Workspace / Project panels do.
     _bgIsDark = [NppThemeManager isDarkColor:bg];
-    _scrollView.appearance = [NSAppearance appearanceNamed:
-        _bgIsDark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    _scrollView.appearance = [NppThemeManager appearanceForBackground:bg];
 
     [_tableView reloadData];   // refresh cell text colors + floppy icons
 }

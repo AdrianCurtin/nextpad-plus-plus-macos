@@ -236,8 +236,7 @@ static NSString * const kLastRepoRootKey = @"GitPanelLastRepoRoot";
     // The list is painted with the theme background while the header row
     // above it sits on the chrome, so pin only the list's appearance to the
     // theme (selection fill, scroller) and leave the header on the chrome.
-    _scrollView.appearance = [NSAppearance appearanceNamed:
-        [NppThemeManager isDarkColor:bg] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    _scrollView.appearance = [NppThemeManager appearanceForBackground:bg];
     _branchLabel.textColor      = fg;
     _noRepoLabel.textColor      = [NSColor secondaryLabelColor];
     [self _refreshToolbarIcons];
