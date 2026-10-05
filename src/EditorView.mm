@@ -277,13 +277,14 @@ static int nppEOLModeFromPrefs(void) {
 
 // Loaded files take the line ending of their first line break, like Windows
 // NPP's FileManager::getEOLFormatForm. Files with no line break fall back to
-// the pref. Stops at the first EOL, so the cost is bounded by line 1's length.
+// the pref. Searching for LF first bounds LF and CRLF files to line 1; only
+// CR-only files (or files with no line break) are scanned to the end.
 static int nppDetectEOLMode(const char *bytes, NSUInteger len) {
-    for (NSUInteger i = 0; i < len; i++) {
-        if (bytes[i] == '\n') return SC_EOL_LF;
-        if (bytes[i] == '\r')
-            return (i + 1 < len && bytes[i + 1] == '\n') ? SC_EOL_CRLF : SC_EOL_CR;
-    }
+    if (!bytes || !len) return nppEOLModeFromPrefs();
+    const char *lf = (const char *)memchr(bytes, '\n', len);
+    const char *cr = (const char *)memchr(bytes, '\r', lf ? (NSUInteger)(lf - bytes) : len);
+    if (cr) return (cr + 1 < bytes + len && cr[1] == '\n') ? SC_EOL_CRLF : SC_EOL_CR;
+    if (lf) return SC_EOL_LF;
     return nppEOLModeFromPrefs();
 }
 
