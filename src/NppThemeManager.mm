@@ -291,17 +291,17 @@ static NSColor *unsavedTintForDark(BOOL dark) {
 }
 
 - (nullable NSImage *)unsavedDocumentIconForDarkBackground:(BOOL)dark {
-    // The filled Fluent save glyph, painted solid in the unsaved tint. The
-    // outline save_off_red only colours its thin label slot, which shrinks to
-    // well under a pixel at tab / list size and reads as the same grey floppy
-    // as a saved document. A solid red floppy is what Notepad++ shows
-    // (tabbar/unsaved.ico) and stays distinct in both light and dark.
+    // The same outline save glyph saved documents use (regular/save_off),
+    // with the whole outline painted in the unsaved tint: same shape and
+    // stroke weight, only the colour changes. save_off_red colours just its
+    // thin label slot, which shrinks below a pixel at tab / list size and
+    // reads as the same grey floppy as a saved document.
     // Cached per background (tabs redraw often); cleared in -_recalcIsDark.
     NSImage *cached = dark ? _unsavedIconDark : _unsavedIconLight;
     if (cached) return cached;
     NSString *base = dark ? @"icons/dark/toolbar" : @"icons/light/toolbar";
     NSString *path = [[NSBundle mainBundle] pathForResource:@"save_off" ofType:@"png"
-                                               inDirectory:[base stringByAppendingPathComponent:@"filled"]];
+                                               inDirectory:[base stringByAppendingPathComponent:@"regular"]];
     NSImage *glyph = path ? [[NSImage alloc] initWithContentsOfFile:path] : nil;
     NSImage *icon;
     if (glyph) {
