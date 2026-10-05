@@ -129,7 +129,7 @@
     [self _configureMapSci];
 
     // Files dropped on the map open like files dropped on the editor.
-    [self registerForDraggedTypes:@[NSPasteboardTypeFileURL, NSFilenamesPboardType]];
+    [self registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
 
     _overlay = [[_DMViewportOverlay alloc] initWithFrame:NSZeroRect];
     _overlay.translatesAutoresizingMaskIntoConstraints = NO;
