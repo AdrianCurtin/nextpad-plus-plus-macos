@@ -18,6 +18,7 @@
 #import "GitHelper.h"
 #import "Scintilla.h"
 #import "ScintillaMessages.h"
+#import "NppScintillaIDs.h"
 #include "SciLexer.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <vector>
@@ -2809,13 +2810,15 @@ static NSString *nppDefaultWordChars(ScintillaView *sci) {
     }
 }
 
-static const int kBookmarkMarker       = 20;
-static const int kHideLinesBeginMarker = 19; // green ▶ arrow on line BEFORE hidden range
-static const int kHideLinesEndMarker   = 18; // green ◀ arrow on line AFTER hidden range
-static const int kHighlightIndicator   =  8; // INDICATOR_CONTAINER = 8, avoids lexer indicators 0-7
+// Marker and indicator numbers (bookmark, hide-lines, smart highlight, mark
+// styles, spell, git, links, inc search) live in NppScintillaIDs.h so the
+// plugin allocation ranges can be checked against them.
 
 // 5 mark-style indicators (9-13): Scintilla BGR colors (b<<16|g<<8|r)
-static const int     kMarkInds[5]    = { 9, 10, 11, 12, 13 };
+static const int     kMarkInds[kMarkIndicatorCount] = {
+    kMarkIndicatorFirst,     kMarkIndicatorFirst + 1, kMarkIndicatorFirst + 2,
+    kMarkIndicatorFirst + 3, kMarkIndicatorFirst + 4,
+};
 static const sptr_t  kMarkColors[5]  = {
     0xFFFF00, // style 1: cyan   (R=0,   G=255, B=255)
     0x00FFFF, // style 2: yellow (R=255, G=255, B=0  )
@@ -2824,21 +2827,6 @@ static const sptr_t  kMarkColors[5]  = {
     0xFF64C8, // style 5: violet (R=200, G=100, B=255)
 };
 
-// Spell-check indicator (slot 17, INDIC_SQUIGGLE red)
-static const int kSpellIndicator = 17;
-
-// Git diff line-highlight indicator (slot 18, INDIC_FULLBOX, pink)
-static const int kGitDiffIndicator = 18;
-
-// Clickable-link indicator (slot 19, issue #133). Style derived from prefs
-// (underline vs colored text; fullbox hover).
-static const int kClickableLinkIndicator = 19;
-
-// Git gutter marker slots — must be 0-19 (0-24 are user-definable, but 21-24
-// are used by change-history and 25-31 are reserved for fold markers).
-static const int kGitMarkerAdded    = 6;
-static const int kGitMarkerModified = 7;
-static const int kGitMarkerDeleted  = 8;
 static const int kGitGutterMargin   = 4;  // margin index for git gutter
 
 #pragma mark - Lexer Colors
@@ -3720,8 +3708,6 @@ static const int kHistoryMask = (1 << SC_MARKNUM_HISTORY_MODIFIED);
 }
 
 #pragma mark - Incremental Search (highlight all matches)
-
-static const int kIndicatorIncSearch = 28; // Scintilla indicator slot for incremental search
 
 - (void)highlightAllMatches:(NSString *)text matchCase:(BOOL)mc {
     ScintillaView *sci = _scintillaView;
