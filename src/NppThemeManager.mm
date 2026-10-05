@@ -344,7 +344,13 @@ static NSDictionary<NSString *, NSString *> *toolbarIconMapping(void) {
 }
 
 - (nullable NSImage *)toolbarIconNamed:(NSString *)standardName {
-    NSString *dir = self.toolbarIconDir;
+    return [self toolbarIconNamed:standardName forDarkBackground:_cachedIsDark];
+}
+
+- (nullable NSImage *)toolbarIconNamed:(NSString *)standardName
+                     forDarkBackground:(BOOL)darkBackground {
+    NSString *dir = darkBackground ? @"icons/dark/toolbar/regular"
+                                   : @"icons/light/toolbar/regular";
 
     // Both light and dark dirs use Fluent naming — always map.
     NSString *fileName = toolbarIconMapping()[standardName];
@@ -353,6 +359,13 @@ static NSDictionary<NSString *, NSString *> *toolbarIconMapping(void) {
     NSString *path = [[NSBundle mainBundle] pathForResource:fileName ofType:@"png"
                                                inDirectory:dir];
     return path ? [[NSImage alloc] initWithContentsOfFile:path] : nil;
+}
+
++ (BOOL)isDarkColor:(NSColor *)color {
+    // Theme colors may be in any color space (calibrated, generic, catalog);
+    // brightnessComponent raises on a non-RGB color, so convert first.
+    NSColor *rgb = [color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    return rgb ? rgb.brightnessComponent < 0.5 : NO;
 }
 
 - (nullable NSImage *)tabbarIconNamed:(NSString *)name {
