@@ -124,6 +124,17 @@ typedef struct {
 /// dark icon name if in dark mode. Returns nil if not found.
 - (nullable NSImage *)toolbarIconNamed:(NSString *)standardName;
 
+/// Same as -toolbarIconNamed:, but picks the light/dark icon set from the
+/// background the icon is drawn on instead of the chrome dark-mode state.
+/// For panel bodies painted with the editor theme (NPPStyleStore globalBg),
+/// which can be light while the chrome is dark and vice versa.
+- (nullable NSImage *)toolbarIconNamed:(NSString *)standardName
+                     forDarkBackground:(BOOL)darkBackground;
+
+/// YES when `color` is dark enough that content drawn on it should use the
+/// dark (light-on-dark) variants: DarkAqua appearance, dark icon set.
++ (BOOL)isDarkColor:(NSColor *)color;
+
 /// Load a tabbar icon by name (e.g. "closeTabButton"). Uses current theme directory.
 - (nullable NSImage *)tabbarIconNamed:(NSString *)name;
 
