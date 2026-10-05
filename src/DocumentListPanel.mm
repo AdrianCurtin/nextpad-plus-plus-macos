@@ -327,8 +327,9 @@ static void _docFields(EditorView *ed, NSString **outName,
             ((_NppDocNameCell *)cv).iconH.constant = iconSz;
         }
         cv.toolTip = fullTip;
-        cv.imageView.image = [[NppThemeManager shared]
-            toolbarIconNamed:(ed.isModified ? @"saveFileRed" : @"saveFile")];
+        NppThemeManager *tm = [NppThemeManager shared];
+        cv.imageView.image = ed.isModified ? [tm unsavedDocumentIcon]
+                                           : [tm toolbarIconNamed:@"saveFile"];
         cv.textField.stringValue = name;
         cv.textField.textColor   = textColor;
         cv.textField.font        = font;
