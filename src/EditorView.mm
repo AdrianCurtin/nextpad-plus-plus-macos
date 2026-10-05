@@ -354,12 +354,14 @@ static NSUInteger nppLargeFileThreshold(void) {
 }
 
 /// The UDL dialog saved (or renamed / removed) a UDL: re-apply it if this
-/// buffer uses it, following a rename to the new name.
+/// buffer uses it, following a rename to the new name. If the UDL is gone
+/// (removed), fall back to plain text like Windows (L_TEXT).
 - (void)_userDefineLangsChanged:(NSNotification *)n {
     NSString *name = n.userInfo[@"name"], *oldName = n.userInfo[@"oldName"];
     if (!_currentLanguage.length || !name.length) return;
-    if ([_currentLanguage isEqualToString:(oldName ?: name)])
-        [self setLanguage:name];
+    if (![_currentLanguage isEqualToString:(oldName ?: name)]) return;
+    BOOL exists = [[UserDefineLangManager shared] languageNamed:name] != nil;
+    [self setLanguage:exists ? name : @""];
 }
 
 - (void)dealloc {
