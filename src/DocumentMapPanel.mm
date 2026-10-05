@@ -271,7 +271,8 @@ static sptr_t _dmBGRFromColor(NSColor *c) {
     [_mapSci message:SCI_STYLESETFORE wParam:STYLE_DEFAULT lParam:defaultFg];
     [_mapSci message:SCI_STYLESETBACK wParam:STYLE_DEFAULT lParam:defaultBg];
     [self _applyChromeForBackground:_dmColorFromBGR(defaultBg)];
-    for (int s = 0; s < 128; s++) {
+    // 0-255 so lexer substyles (e.g. LexCPP 128+, LexHTML 192+) are mirrored too.
+    for (int s = 0; s < 256; s++) {
         sptr_t fg = [src message:SCI_STYLEGETFORE wParam:(uptr_t)s];
         [_mapSci message:SCI_STYLESETFORE wParam:(uptr_t)s lParam:fg];
         [_mapSci message:SCI_STYLESETBACK wParam:(uptr_t)s lParam:defaultBg];
