@@ -101,6 +101,8 @@ static NSString *hexFromColor(NSColor *c) {
     sizePop.font = [NSFont systemFontOfSize:11];
     for (NSString *s in @[@"",@"5",@"6",@"7",@"8",@"9",@"10",@"11",@"12",@"14",@"16",@"18",@"20",@"22",@"24",@"26",@"28"])
         [sizePop addItemWithTitle:s];
+    NSString *curSize = style[@"fontSize"] ?: @"";
+    if ([sizePop itemWithTitle:curSize]) [sizePop selectItemWithTitle:curSize];
     [fv addSubview:sizePop];
 
     // Bold / Italic / Underline
@@ -186,8 +188,12 @@ static NSString *hexFromColor(NSColor *c) {
 
     if (helper.response == NSModalResponseOK) {
         // Collect results
-        NSString *selFont = fontPop.selectedItem.title;
-        if (selFont.length) style[@"fontName"] = selFont;
+        // Empty font name / size means "inherit"; clear a previous value
+        // rather than leaving it in place.
+        NSString *selFont = fontPop.selectedItem.title ?: @"";
+        if (selFont.length || style[@"fontName"]) style[@"fontName"] = selFont;
+        NSString *selSize = sizePop.selectedItem.title ?: @"";
+        if (selSize.length || style[@"fontSize"]) style[@"fontSize"] = selSize;
 
         int fs = 0;
         if (boldCk.state == NSControlStateValueOn)  fs |= 1;

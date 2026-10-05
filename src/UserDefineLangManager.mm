@@ -8,6 +8,8 @@
 namespace Scintilla { struct ILexer5; }
 extern "C" Scintilla::ILexer5 *CreateLexer(const char *name);
 
+NSNotificationName const UserDefineLangsDidChangeNotification = @"UserDefineLangsDidChangeNotification";
+
 // ── UserDefinedLang ──────────────────────────────────────────────────────────
 
 @implementation UserDefinedLang
