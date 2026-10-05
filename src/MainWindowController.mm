@@ -1264,10 +1264,37 @@ static NSImage *_customToolbarIcon(NSString *buttonId, NSDictionary *toolbarConf
     return nil;
 }
 
+// ── Toolbar button chrome (hover / pressed / toggled-on) ─────────────────────
+// Shared by every toolbar button flavour in both the Classic and Tahoe profiles.
+// Colours come from NppThemeManager and are translucent overlays, so the
+// highlight reads on whatever is behind the button (flat Classic bar, Tahoe pill
+// gradient). Toggled-on draws first; hover/pressed then layers on top so a
+// toggled button still answers the cursor.
+static void nppDrawToolbarButtonChrome(NSRect bounds, BOOL hovering, BOOL pressed, BOOL toggledOn) {
+    if (!hovering && !pressed && !toggledOn) return;
+    NppThemeManager *tm = [NppThemeManager shared];
+    CGFloat r = nppToolbarCornerR();
+    NSBezierPath *fill = [NSBezierPath bezierPathWithRoundedRect:bounds xRadius:r yRadius:r];
+    NSBezierPath *border = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(bounds, 0.5, 0.5)
+                                                           xRadius:r yRadius:r];
+    border.lineWidth = 1.0;
+    if (toggledOn) {
+        [tm.toolbarButtonToggledFill setFill];     [fill fill];
+        [tm.toolbarButtonToggledBorder setStroke]; [border stroke];
+    }
+    if (pressed || hovering) {
+        [(pressed ? tm.toolbarButtonPressedFill : tm.toolbarButtonHoverFill) setFill];
+        [fill fill];
+        if (!toggledOn) { [tm.toolbarButtonHoverBorder setStroke]; [border stroke]; }
+    }
+}
+
 // ── Flat toolbar button (28×28 pt, rounded hover border) ────────────────────
 @interface NppToolbarButton : NSButton {
     BOOL _hovering;
 }
+- (BOOL)_nppShowsHover;
+- (BOOL)_nppShowsPressed;
 @end
 
 @implementation NppToolbarButton
@@ -1292,29 +1319,25 @@ static NSImage *_customToolbarIcon(NSString *buttonId, NSDictionary *toolbarConf
 - (void)mouseEntered:(NSEvent *)event { _hovering = YES;  [self setNeedsDisplay:YES]; }
 - (void)mouseExited:(NSEvent *)event  { _hovering = NO;   [self setNeedsDisplay:YES]; }
 
+// The toolbar re-hosts item views on resize/overflow; a view that leaves its
+// window never gets mouseExited, so drop any stale hover when it moves.
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    _hovering = NO;
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setEnabled:(BOOL)enabled {
+    [super setEnabled:enabled];
+    [self setNeedsDisplay:YES];
+}
+
+// Disabled buttons show no hover or pressed chrome.
+- (BOOL)_nppShowsHover   { return _hovering && self.isEnabled; }
+- (BOOL)_nppShowsPressed { return self.isHighlighted && self.isEnabled; }
+
 - (void)drawRect:(NSRect)dirtyRect {
-    BOOL pressed = self.isHighlighted;
-    if (pressed || _hovering) {
-        BOOL isDark = [NppThemeManager shared].isDark;
-        NSColor *bg, *bdr;
-        if (isDark) {
-            // Flat solid grey — border matches fill so it reads as a clean block.
-            bg = pressed
-                ? [NSColor colorWithRed:0x21/255.0 green:0x21/255.0 blue:0x21/255.0 alpha:1.0]
-                : [NSColor colorWithRed:0x2e/255.0 green:0x2e/255.0 blue:0x2e/255.0 alpha:1.0];
-            bdr = bg;
-        } else {
-            bg = pressed
-                ? [NSColor colorWithRed:0xCC/255.0 green:0xE8/255.0 blue:0xFF/255.0 alpha:1.0]
-                : [NSColor colorWithRed:0xE5/255.0 green:0xF3/255.0 blue:0xFF/255.0 alpha:1.0];
-            bdr = [NSColor colorWithRed:0xD0/255.0 green:0xEA/255.0 blue:0xFF/255.0 alpha:1.0];
-        }
-        NSBezierPath *fill = [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:nppToolbarCornerR() yRadius:nppToolbarCornerR()];
-        [bg setFill]; [fill fill];
-        NSBezierPath *border = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5)
-                                                               xRadius:nppToolbarCornerR() yRadius:nppToolbarCornerR()];
-        border.lineWidth = 1.0; [bdr setStroke]; [border stroke];
-    }
+    nppDrawToolbarButtonChrome(self.bounds, [self _nppShowsHover], [self _nppShowsPressed], NO);
     if (self.image) {
         [self.image drawInRect:NSInsetRect(self.bounds, 1, 1)
                       fromRect:NSZeroRect
@@ -1330,52 +1353,16 @@ static NSImage *_customToolbarIcon(NSString *buttonId, NSDictionary *toolbarConf
 // ── Toggle toolbar button: on/off with blue highlight or desaturation ────────
 @interface NppToggleToolbarButton : NppToolbarButton
 @property (nonatomic) BOOL toggledOn;
-@property (nonatomic) BOOL useBlueHighlight; // YES = panel style (blue bg), NO = desaturate when off
+@property (nonatomic) BOOL useBlueHighlight; // YES = panel style (accent bg), NO = desaturate when off
 @end
 
 @implementation NppToggleToolbarButton
 
 - (void)drawRect:(NSRect)dirtyRect {
-    BOOL pressed = self.isHighlighted;
-    BOOL isDark  = [NppThemeManager shared].isDark;
-
-    // Active-toggle: persistent background (panel style)
-    if (self.toggledOn && self.useBlueHighlight) {
-        NSColor *bg, *bdr;
-        if (isDark) {
-            // #232323 for active-toggle — darker than the chrome / hover states
-            // but not pure black so the chip reads as part of the same surface
-            // family. (Hover: #2E2E2E, Pressed: #212121, Toggled-on: #232323.)
-            bg  = [NSColor colorWithRed:0x23/255.0 green:0x23/255.0 blue:0x23/255.0 alpha:1.0];
-            bdr = bg;
-        } else {
-            bg  = [NSColor colorWithRed:0xCC/255.0 green:0xE8/255.0 blue:0xFF/255.0 alpha:0.65];
-            bdr = [NSColor colorWithRed:0x80/255.0 green:0xC0/255.0 blue:0xFF/255.0 alpha:0.80];
-        }
-        NSBezierPath *fill = [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:nppToolbarCornerR() yRadius:nppToolbarCornerR()];
-        [bg setFill]; [fill fill];
-        NSBezierPath *border = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5)
-                                                               xRadius:nppToolbarCornerR() yRadius:nppToolbarCornerR()];
-        border.lineWidth = 1.0; [bdr setStroke]; [border stroke];
-    } else if (pressed || _hovering) {
-        NSColor *bg, *bdr;
-        if (isDark) {
-            bg = pressed
-                ? [NSColor colorWithRed:0x21/255.0 green:0x21/255.0 blue:0x21/255.0 alpha:1.0]
-                : [NSColor colorWithRed:0x2e/255.0 green:0x2e/255.0 blue:0x2e/255.0 alpha:1.0];
-            bdr = bg;
-        } else {
-            bg = pressed
-                ? [NSColor colorWithRed:0xCC/255.0 green:0xE8/255.0 blue:0xFF/255.0 alpha:1.0]
-                : [NSColor colorWithRed:0xE5/255.0 green:0xF3/255.0 blue:0xFF/255.0 alpha:1.0];
-            bdr = [NSColor colorWithRed:0xD0/255.0 green:0xEA/255.0 blue:0xFF/255.0 alpha:1.0];
-        }
-        NSBezierPath *fill = [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:nppToolbarCornerR() yRadius:nppToolbarCornerR()];
-        [bg setFill]; [fill fill];
-        NSBezierPath *border = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5)
-                                                               xRadius:nppToolbarCornerR() yRadius:nppToolbarCornerR()];
-        border.lineWidth = 1.0; [bdr setStroke]; [border stroke];
-    }
+    // Active-toggle: persistent accent background (panel style), with hover and
+    // pressed layered on top.
+    nppDrawToolbarButtonChrome(self.bounds, [self _nppShowsHover], [self _nppShowsPressed],
+                               self.toggledOn && self.useBlueHighlight);
 
     // Desaturation style: OFF = greyed out (alpha 0.30), ON = normal
     CGFloat alpha = 1.0;
@@ -1399,13 +1386,7 @@ static NSImage *_customToolbarIcon(NSString *buttonId, NSDictionary *toolbarConf
 @interface _FlatImgButton : NSButton @end
 @implementation _FlatImgButton
 - (void)drawRect:(NSRect)dirtyRect {
-    if (self.isHighlighted) {
-        NSColor *bg = [NppThemeManager shared].isDark
-            ? [NSColor colorWithRed:0x21/255.0 green:0x21/255.0 blue:0x21/255.0 alpha:1.0]
-            : [NSColor colorWithRed:0xCC/255.0 green:0xE8/255.0 blue:0xFF/255.0 alpha:1.0];
-        NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:nppToolbarCornerR() yRadius:nppToolbarCornerR()];
-        [bg setFill]; [p fill];
-    }
+    nppDrawToolbarButtonChrome(self.bounds, NO, self.isHighlighted, NO);
     if (self.image)
         [self.image drawInRect:NSInsetRect(self.bounds, 1, 1)
                       fromRect:NSZeroRect
@@ -1420,13 +1401,7 @@ static NSImage *_customToolbarIcon(NSString *buttonId, NSDictionary *toolbarConf
 @interface _DropArrowButton : NSButton @end
 @implementation _DropArrowButton
 - (void)drawRect:(NSRect)dirtyRect {
-    if (self.isHighlighted) {
-        NSColor *bg = [NppThemeManager shared].isDark
-            ? [NSColor colorWithRed:0x21/255.0 green:0x21/255.0 blue:0x21/255.0 alpha:1.0]
-            : [NSColor colorWithRed:0xCC/255.0 green:0xE8/255.0 blue:0xFF/255.0 alpha:1.0];
-        NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:nppToolbarCornerR() yRadius:nppToolbarCornerR()];
-        [bg setFill]; [p fill];
-    }
+    nppDrawToolbarButtonChrome(self.bounds, NO, self.isHighlighted, NO);
     static NSDictionary *attrs;
     if (!attrs)
         attrs = @{ NSFontAttributeName:            [NSFont systemFontOfSize:14],
@@ -1440,9 +1415,9 @@ static NSImage *_customToolbarIcon(NSString *buttonId, NSDictionary *toolbarConf
 @end
 
 // Container view: shows unified highlight when the cursor is anywhere over
-// the button+arrow group, and (in dark mode) paints a persistent #000000
-// background while All-Chars is toggled ON. Toggle-on takes precedence
-// over hover (matching NppToggleToolbarButton's pattern).
+// the button+arrow group, and paints a persistent accent background while
+// All-Chars is toggled ON (matching NppToggleToolbarButton's panel style, with
+// hover layered on top).
 @interface _AllCharsHoverGroup : NSView { BOOL _hovering; }
 @property (nonatomic) BOOL toggledOn;
 @end
@@ -1467,46 +1442,13 @@ static NSImage *_customToolbarIcon(NSString *buttonId, NSDictionary *toolbarConf
 }
 - (void)mouseEntered:(NSEvent *)e { _hovering = YES;  [self setNeedsDisplay:YES]; }
 - (void)mouseExited:(NSEvent *)e  { _hovering = NO;   [self setNeedsDisplay:YES]; }
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    _hovering = NO;
+    [self setNeedsDisplay:YES];
+}
 - (void)drawRect:(NSRect)dirty {
-    BOOL isDark = [NppThemeManager shared].isDark;
-
-    // Toggle-on: persistent background (mirrors NppToggleToolbarButton so the
-    // pilcrow group reads the same as adjacent Word-Wrap / Indent-Guide chips).
-    // Takes precedence over hover.
-    //   Dark : #232323 (between Pressed #212121 and Hover #2E2E2E).
-    //   Light: #CCE8FF @ 65% + #80C0FF border @ 80%.
-    if (_toggledOn) {
-        NSColor *bg, *bdr;
-        if (isDark) {
-            bg  = [NSColor colorWithRed:0x23/255.0 green:0x23/255.0 blue:0x23/255.0 alpha:1.0];
-            bdr = bg;
-        } else {
-            bg  = [NSColor colorWithRed:0xCC/255.0 green:0xE8/255.0 blue:0xFF/255.0 alpha:0.65];
-            bdr = [NSColor colorWithRed:0x80/255.0 green:0xC0/255.0 blue:0xFF/255.0 alpha:0.80];
-        }
-        NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:nppToolbarCornerR() yRadius:nppToolbarCornerR()];
-        [bg setFill]; [p fill];
-        NSBezierPath *q = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5)
-                                                          xRadius:nppToolbarCornerR() yRadius:nppToolbarCornerR()];
-        q.lineWidth = 1.0; [bdr setStroke]; [q stroke];
-    } else if (_hovering) {
-        NSColor *bg, *bdr;
-        if (isDark) {
-            bg  = [NSColor colorWithRed:0x2e/255.0 green:0x2e/255.0 blue:0x2e/255.0 alpha:1.0];
-            bdr = bg;
-        } else {
-            bg  = [NSColor colorWithRed:0xE5/255.0 green:0xF3/255.0 blue:0xFF/255.0 alpha:1.0];
-            bdr = [NSColor colorWithRed:0xD0/255.0 green:0xEA/255.0 blue:0xFF/255.0 alpha:1.0];
-        }
-        NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:nppToolbarCornerR() yRadius:nppToolbarCornerR()];
-        [bg setFill];
-        [p fill];
-        NSBezierPath *q = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5)
-                                                          xRadius:nppToolbarCornerR() yRadius:nppToolbarCornerR()];
-        q.lineWidth = 1.0;
-        [bdr setStroke];
-        [q stroke];
-    }
+    nppDrawToolbarButtonChrome(self.bounds, _hovering, NO, _toggledOn);
     [super drawRect:dirty];
 }
 @end

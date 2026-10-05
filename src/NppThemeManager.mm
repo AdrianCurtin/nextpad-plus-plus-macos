@@ -307,6 +307,47 @@ static NSDictionary<NSString *, NSString *> *toolbarIconMapping(void) {
                          : [NSColor colorWithWhite:0.18 alpha:1];
 }
 
+// ── Toolbar Button Colors ────────────────────────────────────────────────────
+// Neutral overlays (black on light, white on dark) rather than fixed fills. A
+// fixed dark fill such as #2E2E2E sits on the #282828 macOS 26+ dark toolbar at
+// 1.09:1 and disappears; an overlay keeps the same step against the Classic bar
+// and the Tahoe pill gradient alike.
+
+static BOOL _nppIncreaseContrast(void) {
+    return NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast;
+}
+
+- (NSColor *)toolbarButtonHoverFill {
+    BOOL hc = _nppIncreaseContrast();
+    return _cachedIsDark ? [NSColor colorWithWhite:1.0 alpha:hc ? 0.20 : 0.12]
+                         : [NSColor colorWithWhite:0.0 alpha:hc ? 0.16 : 0.10];
+}
+
+- (NSColor *)toolbarButtonPressedFill {
+    BOOL hc = _nppIncreaseContrast();
+    return _cachedIsDark ? [NSColor colorWithWhite:1.0 alpha:hc ? 0.30 : 0.20]
+                         : [NSColor colorWithWhite:0.0 alpha:hc ? 0.26 : 0.18];
+}
+
+- (NSColor *)toolbarButtonHoverBorder {
+    if (!_nppIncreaseContrast()) return [NSColor clearColor];
+    return _cachedIsDark ? [NSColor colorWithWhite:1.0 alpha:0.45]
+                         : [NSColor colorWithWhite:0.0 alpha:0.40];
+}
+
+- (NSColor *)toolbarButtonToggledFill {
+    // Resolved at draw time, so it follows the user's accent colour.
+    BOOL hc = _nppIncreaseContrast();
+    return [NSColor.controlAccentColor colorWithAlphaComponent:
+            _cachedIsDark ? (hc ? 0.42 : 0.30) : (hc ? 0.24 : 0.16)];
+}
+
+- (NSColor *)toolbarButtonToggledBorder {
+    BOOL hc = _nppIncreaseContrast();
+    return [NSColor.controlAccentColor colorWithAlphaComponent:
+            hc ? 1.0 : (_cachedIsDark ? 0.70 : 0.55)];
+}
+
 // ── Panel / Status Bar ───────────────────────────────────────────────────────
 
 - (NSColor *)panelBackground {

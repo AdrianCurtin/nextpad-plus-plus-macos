@@ -105,6 +105,17 @@ typedef struct {
 @property (nonatomic, readonly) NSColor *arrowBorder;
 @property (nonatomic, readonly) NSColor *arrowFill;
 
+// Toolbar buttons (Classic and Tahoe). Hover/pressed are translucent neutral
+// overlays so they read on any chrome behind the button: the flat Classic bar,
+// the Tahoe pill gradient, or system glass. Toggled-on uses the accent colour so
+// it stays distinct from hover. All step up when Increase Contrast is on.
+@property (nonatomic, readonly) NSColor *toolbarButtonHoverFill;
+@property (nonatomic, readonly) NSColor *toolbarButtonPressedFill;
+/// Outline around hover/pressed chrome. Clear unless Increase Contrast is on.
+@property (nonatomic, readonly) NSColor *toolbarButtonHoverBorder;
+@property (nonatomic, readonly) NSColor *toolbarButtonToggledFill;
+@property (nonatomic, readonly) NSColor *toolbarButtonToggledBorder;
+
 // Panels / status bar
 @property (nonatomic, readonly) NSColor *panelBackground;
 @property (nonatomic, readonly) NSColor *statusBarBackground;
