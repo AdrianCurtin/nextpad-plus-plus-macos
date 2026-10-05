@@ -2081,13 +2081,13 @@ static NSColor *nppColorFromHex(NSString *hex) {
     // RGB(0x77, 0xCC, 0x77) with full alpha, matching Windows NPP
     [sci message:SCI_SETELEMENTCOLOUR wParam:81 lParam:(sptr_t)(0xFF77CC77)]; // SC_ELEMENT_HIDDEN_LINE=81
 
-    // ── Smart highlight indicator (indicator 8) ──────────────────────────────
+    // ── Smart highlight indicator (indicator 29) ─────────────────────────────
     [sci message:SCI_INDICSETSTYLE wParam:kHighlightIndicator lParam:INDIC_ROUNDBOX];
     [sci message:SCI_INDICSETFORE  wParam:kHighlightIndicator
            lParam:sciColor([NSColor colorWithRed:1.0 green:0.85 blue:0.0 alpha:1])];
     [sci message:SCI_INDICSETALPHA wParam:kHighlightIndicator lParam:80];
 
-    // ── Mark-style indicators (indicators 9-13, styles 1-5) ──────────────────
+    // ── Mark-style indicators (indicators 25-21, styles 1-5) ─────────────────
     for (int i = 0; i < 5; i++) {
         [sci message:SCI_INDICSETSTYLE wParam:(uptr_t)kMarkInds[i] lParam:INDIC_ROUNDBOX];
         [sci message:SCI_INDICSETFORE  wParam:(uptr_t)kMarkInds[i] lParam:kMarkColors[i]];
@@ -2095,18 +2095,18 @@ static NSColor *nppColorFromHex(NSString *hex) {
         [sci message:SCI_INDICSETUNDER wParam:(uptr_t)kMarkInds[i] lParam:1]; // draw under text
     }
 
-    // ── Spell-check indicator (slot 17, INDIC_SQUIGGLE, red) ─────────────────
+    // ── Spell-check indicator (slot 30, INDIC_SQUIGGLE, red) ─────────────────
     [sci message:SCI_INDICSETSTYLE wParam:kSpellIndicator lParam:INDIC_SQUIGGLE];
     [sci message:SCI_INDICSETFORE  wParam:kSpellIndicator lParam:0x0000FF]; // red (BGR)
 
-    // ── Git diff line-highlight indicator (slot 18, INDIC_FULLBOX, pink) ─────
+    // ── Git diff line-highlight indicator (slot 26, INDIC_FULLBOX, pink) ─────
     [sci message:SCI_INDICSETSTYLE       wParam:kGitDiffIndicator lParam:INDIC_FULLBOX];
     [sci message:SCI_INDICSETFORE        wParam:kGitDiffIndicator lParam:0xB469FF]; // hot pink BGR (#FF69B4)
     [sci message:SCI_INDICSETALPHA       wParam:kGitDiffIndicator lParam:55];
     [sci message:SCI_INDICSETOUTLINEALPHA wParam:kGitDiffIndicator lParam:55];
     [sci message:SCI_INDICSETUNDER       wParam:kGitDiffIndicator lParam:1]; // draw under text
 
-    // ── Git gutter markers (margin 4, 4px, slots 6-8) ────────────────────────
+    // ── Git gutter markers (margin 4, 4px, slots 15-17) ──────────────────────
     [sci message:SCI_MARKERDEFINE  wParam:kGitMarkerAdded    lParam:SC_MARK_LEFTRECT];
     [sci message:SCI_MARKERSETBACK wParam:kGitMarkerAdded    lParam:0x44CC2E]; // green BGR
     [sci message:SCI_MARKERDEFINE  wParam:kGitMarkerModified lParam:SC_MARK_LEFTRECT];
@@ -2814,11 +2814,8 @@ static NSString *nppDefaultWordChars(ScintillaView *sci) {
 // styles, spell, git, links, inc search) live in NppScintillaIDs.h so the
 // plugin allocation ranges can be checked against them.
 
-// 5 mark-style indicators (9-13): Scintilla BGR colors (b<<16|g<<8|r)
-static const int     kMarkInds[kMarkIndicatorCount] = {
-    kMarkIndicatorFirst,     kMarkIndicatorFirst + 1, kMarkIndicatorFirst + 2,
-    kMarkIndicatorFirst + 3, kMarkIndicatorFirst + 4,
-};
+// 5 mark-style indicators (25-21, as on Windows): Scintilla BGR colors (b<<16|g<<8|r)
+static const int *const kMarkInds = kMarkStyleIndicators;
 static const sptr_t  kMarkColors[5]  = {
     0xFFFF00, // style 1: cyan   (R=0,   G=255, B=255)
     0x00FFFF, // style 2: yellow (R=255, G=255, B=0  )
