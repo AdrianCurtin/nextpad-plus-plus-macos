@@ -339,6 +339,81 @@ static NSString *_userThemesDir(void) {
     [self _buildDict];
 }
 
+// Rewrite one attribute value inside the first <WidgetStyle name="..."> tag of
+// `xml`, only if it currently equals `oldValue`. Text-level edit so the rest of
+// the file (comments, attribute order, line endings) is left byte-for-byte.
+static BOOL _replaceWidgetAttr(NSMutableString *xml, NSString *styleName,
+                               NSString *attr, NSString *oldValue, NSString *newValue) {
+    NSString *tagPattern = [NSString stringWithFormat:
+        @"<WidgetStyle\\b[^>]*\\bname=\"%@\"[^>]*>",
+        [NSRegularExpression escapedPatternForString:styleName]];
+    NSRegularExpression *tagRe = [NSRegularExpression regularExpressionWithPattern:tagPattern options:0 error:nil];
+    NSRange tag = [tagRe firstMatchInString:xml options:0 range:NSMakeRange(0, xml.length)].range;
+    if (tag.location == NSNotFound) return NO;
+    NSString *needle = [NSString stringWithFormat:@" %@=\"%@\"", attr, oldValue];
+    NSRange hit = [xml rangeOfString:needle options:0 range:tag];
+    if (hit.location == NSNotFound) return NO;
+    [xml replaceCharactersInRange:hit
+                       withString:[NSString stringWithFormat:@" %@=\"%@\"", attr, newValue]];
+    return YES;
+}
+
+static BOOL _widgetHasAttr(NSString *xml, NSString *styleName, NSString *attr, NSString *value) {
+    NSMutableString *probe = [xml mutableCopy];
+    return _replaceWidgetAttr(probe, styleName, attr, value, value);
+}
+
++ (void)migrateLegacyDefaultEditorFont {
+    // One shot: once this has looked at the file, a user who later picks
+    // Courier New 10 on purpose keeps it.
+    static NSString *const kDoneKey = @"NPPMacDefaultEditorFontMigrated";
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    if ([ud boolForKey:kDoneKey]) return;
+
+    NSString *path = NppConfigSubpath(@"stylers.xml");
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (!data) {
+        // No user copy yet: it will be created from the current model,
+        // which already carries the Mac default.
+        [ud setBool:YES forKey:kDoneKey];
+        return;
+    }
+    NSMutableString *xml = [[NSMutableString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (!xml) { [ud setBool:YES forKey:kDoneKey]; return; }
+
+    // A font the user chose in Style Configurator is also recorded here;
+    // its presence means "touched", whatever the XML says.
+    NSDictionary *overrides = [ud dictionaryForKey:kNSDefaultsStyleKey];
+    BOOL changed = NO;
+
+    // Default Style: only the exact old pair counts as "never touched".
+    // Courier New at another size, or another font at 10, was a choice.
+    if (!overrides[@"global|Default Style|fontName"] &&
+        !overrides[@"global|Default Style|fontSize"] &&
+        _widgetHasAttr(xml, @"Default Style", @"fontName", @"Courier New") &&
+        _widgetHasAttr(xml, @"Default Style", @"fontSize", @"10")) {
+        changed |= _replaceWidgetAttr(xml, @"Default Style", @"fontName", @"Courier New", @"Menlo");
+        changed |= _replaceWidgetAttr(xml, @"Default Style", @"fontSize", @"10", @"12");
+    }
+
+    // Global override row: its font only applies when the user enables the
+    // override's font checkbox. Leave it alone if they have.
+    if (!overrides[@"global|Global override|fontName"] &&
+        ![ud boolForKey:kPrefGlobalOverrideEnableFont]) {
+        changed |= _replaceWidgetAttr(xml, @"Global override", @"fontName", @"Courier New", @"Menlo");
+    }
+
+    if (changed) {
+        NSError *err = nil;
+        if (![[xml dataUsingEncoding:NSUTF8StringEncoding] writeToFile:path options:NSDataWritingAtomic error:&err]) {
+            NSLog(@"[NPPStyleStore] default font migration: could not write %@: %@", path, err);
+            return;  // retry next launch
+        }
+        NSLog(@"[NPPStyleStore] Migrated untouched Courier New default font in stylers.xml to Menlo");
+    }
+    [ud setBool:YES forKey:kDoneKey];
+}
+
 - (void)_buildDict {
     NSMutableDictionary *d = [NSMutableDictionary new];
     for (NPPLexer *lex in _lexers) d[lex.lexerID] = lex;
@@ -370,7 +445,7 @@ static NSString *_userThemesDir(void) {
 - (NSColor *)globalFg   { NPPStyleEntry *e = [self _globalDefaultEntry]; return e.fgColor ?: [NSColor blackColor]; }
 - (NSColor *)globalBg   { NPPStyleEntry *e = [self _globalDefaultEntry]; return e.bgColor ?: [NSColor whiteColor]; }
 - (NSString *)globalFontName { NPPStyleEntry *e = [self _globalDefaultEntry]; return (e.fontName.length) ? e.fontName : @"Menlo"; }
-- (int)globalFontSize   { NPPStyleEntry *e = [self _globalDefaultEntry]; return e.fontSize > 0 ? e.fontSize : 11; }
+- (int)globalFontSize   { NPPStyleEntry *e = [self _globalDefaultEntry]; return e.fontSize > 0 ? e.fontSize : 12; }
 
 - (nullable NPPStyleEntry *)globalStyleNamed:(NSString *)name {
     if (!_lexers.count) [self loadFromDefaults];
