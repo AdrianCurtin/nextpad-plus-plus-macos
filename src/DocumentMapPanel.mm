@@ -3,6 +3,7 @@
 #import "Scintilla.h"
 #import "ScintillaMessages.h"
 #import "NppThemeManager.h"
+#import "StyleConfiguratorWindowController.h"
 
 // The map shares the tracked editor's Scintilla document (SCI_SETDOCPOINTER),
 // so it must never take keyboard focus: SCI_SETREADONLY is a document
@@ -26,6 +27,7 @@
 
 @interface DocumentMapPanel ()
 - (NSRect)_viewportRectForOverlay:(_DMViewportOverlay *)overlay;
+- (NSColor *)_viewportColor;
 - (void)_overlayMouseDown:(NSPoint)pt;
 - (void)_overlayMouseDragged:(NSPoint)pt;
 - (void)_overlayScrollWheel:(NSEvent *)event;
@@ -45,7 +47,7 @@
 - (void)drawRect:(NSRect)dirty {
     NSRect vr = [self.panel _viewportRectForOverlay:self];
     if (NSIsEmptyRect(vr)) return;
-    [[NSColor colorWithRed:1.0 green:0.72 blue:0.57 alpha:0.45] setFill];
+    [[self.panel _viewportColor] setFill];
     [NSBezierPath fillRect:vr];
 }
 
@@ -72,6 +74,7 @@
     _DMViewportOverlay *_overlay;
     __weak EditorView  *_trackedEditor;
     NSTimer            *_contentDebounce;
+    NSColor            *_viewportColor; // theme-derived; see -_applyChromeForBackground:
     CGFloat             _grabOffset;   // fromTop offset from mouse to rect center at mouseDown
 }
 
@@ -87,6 +90,11 @@
         [[NSNotificationCenter defaultCenter]
             addObserver:self selector:@selector(_prefsChanged:)
                    name:@"NPPPreferencesChanged" object:nil];
+        // In Auto mode the dark-mode switch commits a new editor theme; in
+        // forced Light/Dark it only changes the chrome. Either way re-derive.
+        [[NSNotificationCenter defaultCenter]
+            addObserver:self selector:@selector(_prefsChanged:)
+                   name:NPPDarkModeChangedNotification object:nil];
     }
     return self;
 }
@@ -166,8 +174,7 @@
 // creates a fresh document) and refreshes the per-view style colours.
 - (void)_updateMapContent {
     [self _syncDocument];
-    EditorView *ed = _trackedEditor;
-    if (ed) [self _applyThemeFromEditor:ed];
+    [self _applyThemeFromEditor:_trackedEditor];
     [self _syncScroll];
     [_overlay setNeedsDisplay:YES];
 }
@@ -184,12 +191,39 @@
 
 // ── Theme mirroring ───────────────────────────────────────────────────────────
 
-- (void)_applyThemeFromEditor:(EditorView *)ed {
+// Scintilla colours are 0xBBGGRR.
+static NSColor *_dmColorFromBGR(sptr_t bgr) {
+    return [NSColor colorWithSRGBRed:(bgr & 0xFF) / 255.0
+                               green:((bgr >> 8) & 0xFF) / 255.0
+                                blue:((bgr >> 16) & 0xFF) / 255.0
+                               alpha:1.0];
+}
+
+static sptr_t _dmBGRFromColor(NSColor *c) {
+    NSColor *rgb = [c colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    if (!rgb) return 0;
+    return (sptr_t)lround(rgb.redComponent * 255)
+         | ((sptr_t)lround(rgb.greenComponent * 255) << 8)
+         | ((sptr_t)lround(rgb.blueComponent * 255) << 16);
+}
+
+- (void)_applyThemeFromEditor:(nullable EditorView *)ed {
     ScintillaView *src = ed.scintillaView;
+    if (!src) {
+        // No editor to mirror: paint the empty map with the theme instead of
+        // Scintilla's built-in white, which glares under a dark theme.
+        NPPStyleStore *store = [NPPStyleStore sharedStore];
+        sptr_t bg = _dmBGRFromColor(store.globalBg);
+        [_mapSci message:SCI_STYLESETFORE wParam:STYLE_DEFAULT lParam:_dmBGRFromColor(store.globalFg)];
+        [_mapSci message:SCI_STYLESETBACK wParam:STYLE_DEFAULT lParam:bg];
+        [self _applyChromeForBackground:_dmColorFromBGR(bg)];
+        return;
+    }
     sptr_t defaultFg = [src message:SCI_STYLEGETFORE wParam:STYLE_DEFAULT];
     sptr_t defaultBg = [src message:SCI_STYLEGETBACK wParam:STYLE_DEFAULT];
     [_mapSci message:SCI_STYLESETFORE wParam:STYLE_DEFAULT lParam:defaultFg];
     [_mapSci message:SCI_STYLESETBACK wParam:STYLE_DEFAULT lParam:defaultBg];
+    [self _applyChromeForBackground:_dmColorFromBGR(defaultBg)];
     for (int s = 0; s < 128; s++) {
         sptr_t fg = [src message:SCI_STYLEGETFORE wParam:(uptr_t)s];
         [_mapSci message:SCI_STYLESETFORE wParam:(uptr_t)s lParam:fg];
@@ -199,6 +233,22 @@
         [_mapSci message:SCI_STYLESETITALIC wParam:(uptr_t)s
                   lParam:[src message:SCI_STYLEGETITALIC wParam:(uptr_t)s]];
     }
+}
+
+// The map body is painted with the editor theme, which need not match the
+// chrome (dark title bar over a light theme, or the reverse). Key the native
+// appearance and the viewport highlight off that background, not -isDark.
+- (void)_applyChromeForBackground:(NSColor *)bg {
+    _mapSci.appearance = [NppThemeManager appearanceForBackground:bg];
+    NSColor *focus = [[NPPStyleStore sharedStore] globalStyleNamed:@"Document map"].fgColor;
+    _viewportColor = [[NppThemeManager shared] documentMapViewportColorOnBackground:bg
+                                                                         themeColor:focus];
+    [_overlay setNeedsDisplay:YES];
+}
+
+- (NSColor *)_viewportColor {
+    if (!_viewportColor) [self _applyThemeFromEditor:_trackedEditor];
+    return _viewportColor;
 }
 
 // ── Scroll sync (proportional — immediate on every cursor/scroll event) ───────
@@ -359,9 +409,17 @@
 }
 
 - (void)_prefsChanged:(NSNotification *)note {
-    EditorView *ed = _trackedEditor;
-    if (ed) [self _applyThemeFromEditor:ed];
-    [_overlay setNeedsDisplay:YES];
+    // Both notifications are posted synchronously and every EditorView
+    // re-applies its theme from its own observer. Observers run in
+    // registration order, so an editor opened after the map would still hold
+    // the old theme here and the map would copy stale colours. Read the
+    // editor once the current notification has been delivered to everyone.
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+        [self _applyThemeFromEditor:self->_trackedEditor];
+    });
 }
 
 
