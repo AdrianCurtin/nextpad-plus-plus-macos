@@ -187,10 +187,12 @@ typedef intptr_t           (*PMESSAGEPROC)(uint32_t, uintptr_t, intptr_t);
 /* ID allocation: NPPM_ALLOCATECMDID / NPPM_ALLOCATEMARKER /
  * NPPM_ALLOCATEINDICATOR take wParam = count, lParam = int* that receives
  * the first ID, and return TRUE, or FALSE when the request can't be met.
- * Ranges differ from Windows for indicators; never hard-code them:
- *   command IDs  23000-24999   (FuncItem _cmdIDs use 22000-22999)
+ * On failure, CMDID and MARKER set *lParam to 0; INDICATOR leaves it
+ * unchanged (same as Windows). Ranges match Windows NPP; still, never
+ * hard-code them:
+ *   command IDs  23000-24998   (FuncItem _cmdIDs use 22000-22999)
  *   markers      1-14
- *   indicators   20-27
+ *   indicators   9-20
  * NPPM_GETBOOKMARKID returns the host's bookmark marker (20). */
 #define NPPM_ALLOCATECMDID               (NPPMSG + 81)
 #define NPPM_ALLOCATEMARKER              (NPPMSG + 82)

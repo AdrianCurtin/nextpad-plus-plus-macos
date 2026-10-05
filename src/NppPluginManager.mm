@@ -32,8 +32,9 @@ NSNotificationName const NppPluginsDidLoadNotification = @"NppPluginsDidLoadNoti
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Hands out IDs from [start, limit): limit itself is never returned.
-// Fails (and leaves *outStart untouched) when count <= 0 or the request
-// would run past limit, matching Windows NPP's IDAllocator.
+// Fails when count <= 0, outStart is null, or the request would run past
+// limit, matching Windows NPP's IDAllocator. On failure *outStart is not
+// written; the NPPM_ALLOCATE* handlers decide what the caller sees.
 class IDAllocator {
 public:
     IDAllocator() : _start(0), _current(0), _limit(0) {}
@@ -326,23 +327,24 @@ static NSArray<EditorView *> *nppAllEditors(MainWindowController *mwc, int filte
 
     // Assign command IDs to each FuncItem. The static range stops below
     // kPluginDynamicCmdIDFirst so it can never collide with IDs handed out
-    // by NPPM_ALLOCATECMDID; a plugin that would overflow it is not loaded.
-    int nbCmds = 0;
+    // by NPPM_ALLOCATECMDID. Once it is exhausted, remaining items keep
+    // _cmdID 0 and get no menu entry. The plugin itself stays loaded:
+    // setInfo has already run, so it may own timers or blocks that would
+    // dangle if the dylib were unmapped now.
+    int nbDropped = 0;
     for (int i = 0; i < nbFunc; i++) {
-        if (funcItems[i]._pFunc) nbCmds++;
-    }
-    if (nbCmds > kPluginCmdIDLimit - _nextPluginCmdBase) {
-        NSLog(@"[Plugins] %@ needs %d command IDs but only %d of %d-%d remain; "
-              @"not loading it.", moduleName, nbCmds,
-              kPluginCmdIDLimit - _nextPluginCmdBase,
-              kPluginCmdIDFirst, kPluginCmdIDLimit - 1);
-        dlclose(handle);
-        return NO;
-    }
-    for (int i = 0; i < nbFunc; i++) {
-        if (funcItems[i]._pFunc) {
+        if (!funcItems[i]._pFunc) continue;
+        if (_nextPluginCmdBase < kPluginCmdIDLimit) {
             funcItems[i]._cmdID = _nextPluginCmdBase++;
+        } else {
+            funcItems[i]._cmdID = 0;
+            nbDropped++;
         }
+    }
+    if (nbDropped > 0) {
+        NSLog(@"[Plugins] %@: plugin command IDs %d-%d exhausted; %d of its "
+              @"commands get no menu item.", moduleName,
+              kPluginCmdIDFirst, kPluginCmdIDLimit - 1, nbDropped);
     }
 
     // Store plugin info
@@ -484,6 +486,8 @@ static NSArray<EditorView *> *nppAllEditors(MainWindowController *mwc, int filte
                 [submenu addItem:[NSMenuItem separatorItem]];
                 continue;
             }
+            // No cmdID assigned (static range exhausted at load time).
+            if (fi->_cmdID == 0) continue;
 
             NSString *title = [NSString stringWithUTF8String:fi->_itemName];
             NSMenuItem *mi = [[NSMenuItem alloc] initWithTitle:title
@@ -526,6 +530,7 @@ static NSArray<EditorView *> *nppAllEditors(MainWindowController *mwc, int filte
         for (int i = 0; i < pi->nbFuncItems; i++) {
             struct FuncItem *fi = &pi->funcItems[i];
             if (!fi->_pFunc) continue; // skip separators
+            if (fi->_cmdID == 0) continue; // no cmdID assigned
             NSString *actionName = [NSString stringWithUTF8String:fi->_itemName];
             BOOL hasIcon = [toolbarCmdIDs containsObject:@(fi->_cmdID)];
             [actions addObject:@{
@@ -540,6 +545,7 @@ static NSArray<EditorView *> *nppAllEditors(MainWindowController *mwc, int filte
 }
 
 - (void)runPluginCommandWithID:(int)cmdID {
+    if (cmdID == 0) return;  // separators and items without an assigned cmdID
     for (auto &pi : _plugins) {
         for (int i = 0; i < pi->nbFuncItems; i++) {
             if (pi->funcItems[i]._cmdID == cmdID && pi->funcItems[i]._pFunc) {
@@ -1172,12 +1178,16 @@ static intptr_t _npp_run_on_main(intptr_t (^block)(void)) {
 
         // ── ID allocation ───────────────────────────────────────────
         // wParam = count, lParam = int* receiving the first ID. Returns
-        // FALSE (and leaves *lParam untouched) if the range can't satisfy
-        // the request. Ranges are documented in NppScintillaIDs.h.
+        // FALSE if the range can't satisfy the request. On failure, as on
+        // Windows (PluginsManager.cpp), CMDID and MARKER set *lParam to 0
+        // and INDICATOR leaves it untouched. Ranges are documented in
+        // NppScintillaIDs.h.
         case NPPM_ALLOCATECMDID: {
             int count = (int)wParam;
             int *start = (int *)lParam;
+            if (!start) return FALSE;
             if (_cmdIDAlloc.allocate(count, start)) return TRUE;
+            *start = 0;
             NSLog(@"[Plugins] NPPM_ALLOCATECMDID(%d) refused: range %d-%d exhausted "
                   @"or invalid request.", count,
                   kPluginDynamicCmdIDFirst, kPluginDynamicCmdIDLimit - 1);
@@ -1187,7 +1197,9 @@ static intptr_t _npp_run_on_main(intptr_t (^block)(void)) {
         case NPPM_ALLOCATEMARKER: {
             int count = (int)wParam;
             int *start = (int *)lParam;
+            if (!start) return FALSE;
             if (_markerAlloc.allocate(count, start)) return TRUE;
+            *start = 0;
             NSLog(@"[Plugins] NPPM_ALLOCATEMARKER(%d) refused: range %d-%d exhausted "
                   @"or invalid request.", count,
                   kPluginMarkerFirst, kPluginMarkerLimit - 1);
