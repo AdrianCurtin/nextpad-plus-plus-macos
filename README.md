@@ -105,7 +105,7 @@ brew install --cask nextpad
 
 ### Is this the "real" Notepad++ for Mac?
 
-Yes — Nextpad++ for macOS is a native port of the actual Notepad++ codebase, running directly on macOS as a first-class native application. It is not a knockoff, a Wine wrapper, or a new editor that imitates Notepad++.
+Nextpad++ for macOS is a native port of the actual Notepad++ codebase, running directly on macOS as a first-class native application. It is not a knockoff, a Wine wrapper, or a new editor that imitates Notepad++.
 
 ### Do I need Wine, Porting Kit, or CrossOver?
 
