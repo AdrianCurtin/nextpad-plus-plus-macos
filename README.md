@@ -62,21 +62,15 @@ The download is a signed, notarized `.dmg`:
 1. Open the downloaded `.dmg`
 2. Drag **Nextpad++** to your **Applications** folder
 3. Launch from Applications or Spotlight
-4. 
+   
 ### Homebrew
 
-You can install Nextpad++ via Homebrew:
+You can install Nextpad++ via Official Homebrew:
 
 ```shell
-brew install --cask nextpad-plus-plus/homebrew-nextpad/nextpad
+brew install --cask nextpad++
 ```
 
-Or install the tap first, step by step:
-
-```shell
-brew tap nextpad-plus-plus/nextpad
-brew install --cask nextpad
-```
 
 ## System Requirements
 
