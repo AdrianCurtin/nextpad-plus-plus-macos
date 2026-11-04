@@ -71,6 +71,11 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 @implementation SCIScrollView
 - (void) tile {
 	[super tile];
+	// LOCAL CHANGE: the content view's cursor rect leaves out shown legacy
+	// scrollers (SCIContentView -resetCursorRects), so refresh it when they
+	// appear, hide or move.
+	if (self.documentView)
+		[self.window invalidateCursorRectsForView: self.documentView];
 
 #if defined(MAC_OS_X_VERSION_10_14)
 	if (std::floor(NSAppKitVersionNumber) > NSAppKitVersionNumber10_13) {
@@ -351,7 +356,25 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 	[super resetCursorRects];
 
 	// We only have one cursor rect: our bounds.
-	const NSRect visibleBounds = mOwner.backend->GetBounds();
+	NSRect visibleBounds = mOwner.backend->GetBounds();
+	// LOCAL CHANGE: the text area runs under the legacy scrollers the editor
+	// uses (EditorView), so trim the cursor rect where a shown scroller covers
+	// it; the pointer over a scroll bar is then the arrow, not the text cursor.
+	NSScrollView *scrollView = self.enclosingScrollView;
+	if (scrollView.scrollerStyle == NSScrollerStyleLegacy) {
+		NSScroller *h = scrollView.hasHorizontalScroller ? scrollView.horizontalScroller : nil;
+		NSScroller *v = scrollView.hasVerticalScroller ? scrollView.verticalScroller : nil;
+		if (h && !h.hidden) {
+			const NSRect bar = [self convertRect: h.bounds fromView: h];
+			if (NSIntersectsRect(bar, visibleBounds) && NSMinY(bar) > NSMinY(visibleBounds))
+				visibleBounds.size.height = NSMinY(bar) - NSMinY(visibleBounds);
+		}
+		if (v && !v.hidden) {
+			const NSRect bar = [self convertRect: v.bounds fromView: v];
+			if (NSIntersectsRect(bar, visibleBounds) && NSMinX(bar) > NSMinX(visibleBounds))
+				visibleBounds.size.width = NSMinX(bar) - NSMinX(visibleBounds);
+		}
+	}
 	[self addCursorRect: visibleBounds cursor: mCurrentCursor];
 }
 
