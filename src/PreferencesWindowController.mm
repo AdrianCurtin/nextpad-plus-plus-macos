@@ -40,6 +40,7 @@ NSString *const kPrefHideTabBar          = @"hideTabBar";
 NSString *const kPrefExitOnCloseLastTab  = @"exitOnCloseLastTab";
 NSString *const kPrefVirtualSpace        = @"virtualSpace";
 NSString *const kPrefColumnSel2MultiEdit = @"columnSel2MultiEdit";
+NSString *const kPrefHomeEndScrollsDoc   = @"homeEndScrollsDocument";
 NSString *const kPrefScrollBeyondLastLine= @"scrollBeyondLastLine";
 NSString *const kPrefScrollSpeedGain     = @"scrollSpeedGain";
 NSString *const kPrefCaretBlinkRate      = @"caretBlinkRate";
@@ -216,6 +217,7 @@ NSString *const kPrefStyleFontSize      = @"styleFontSize";
         kPrefExitOnCloseLastTab:   @NO,
         kPrefVirtualSpace:         @NO,
         kPrefColumnSel2MultiEdit:  @YES,
+        kPrefHomeEndScrollsDoc:    @YES,
         kPrefScrollBeyondLastLine: @NO,
         kPrefScrollSpeedGain:      @1.0,
         kPrefCaretBlinkRate:       @500,
@@ -1231,6 +1233,7 @@ NSString *const kPrefStyleFontSize      = @"styleFontSize";
         @[[loc translate:@"Enable virtual space"],            @702, kPrefVirtualSpace],
         @[[loc translate:@"Column selection switches to multi-editing"], @713, kPrefColumnSel2MultiEdit],
         @[[loc translate:@"Scroll beyond last line"],         @703, kPrefScrollBeyondLastLine],
+        @[[loc translate:@"Home and End scroll to the top and bottom"], @714, kPrefHomeEndScrollsDoc],
         @[[loc translate:@"Copy/cut line without selection"],  @706, kPrefCopyLineNoSelection],
         @[[loc translate:@"Right-click keeps selection"],      @707, kPrefRightClickKeepsSel],
         @[[loc translate:@"Disable selected text drag-drop"],  @708, kPrefDisableTextDragDrop],
@@ -2574,6 +2577,7 @@ static NSDictionary<NSString *, NSString *> *_langDisplayNames() {
         case 710: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefShowEOL]; break;
         case 711: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefShowWhitespace]; break;
         case 713: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefColumnSel2MultiEdit]; break;
+        case 714: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefHomeEndScrollsDoc]; break;
         case 712: {  // Line spacing multiplier (issue #149)
             static const double kPresets[5] = {1.0, 1.2, 1.3, 1.4, 1.5};
             NSInteger idx = [(NSPopUpButton *)sender indexOfSelectedItem];
