@@ -228,6 +228,50 @@
     return result;
 }
 
+// ── Control+G: Go To, as Ctrl+G on Windows ──────────────────────────────────
+
+/// The first menu item under `menu` matching `test`, searching submenus.
+static NSMenuItem *findMenuItem(NSMenu *menu, BOOL (^test)(NSMenuItem *)) {
+    for (NSMenuItem *item in menu.itemArray) {
+        if (item.isSeparatorItem) continue;
+        if (test(item)) return item;
+        NSMenuItem *found = item.submenu ? findMenuItem(item.submenu, test) : nil;
+        if (found) return found;
+    }
+    return nil;
+}
+
+/// Control+G opens Go To, as Ctrl+G does in Windows Notepad++. The menu keeps
+/// Option+Command+G, since Command+G is Find Next on the Mac. Control+G is
+/// sent through the Go To menu item, so validation and macro recording apply,
+/// and a menu item the user bound to Control+G keeps it.
+- (BOOL)_handleControlG:(NSEvent *)event {
+    const NSEventModifierFlags mods = event.modifierFlags &
+        (NSEventModifierFlagCommand | NSEventModifierFlagOption |
+         NSEventModifierFlagControl | NSEventModifierFlagShift);
+    if (mods != NSEventModifierFlagControl) return NO;
+    if (![event.charactersIgnoringModifiers.lowercaseString isEqualToString:@"g"]) return NO;
+    NSMenuItem *bound = findMenuItem(self.mainMenu, ^BOOL(NSMenuItem *item) {
+        return [item.keyEquivalent.lowercaseString isEqualToString:@"g"] &&
+            (item.keyEquivalentModifierMask & (NSEventModifierFlagCommand | NSEventModifierFlagOption |
+                NSEventModifierFlagControl | NSEventModifierFlagShift)) == NSEventModifierFlagControl;
+    });
+    if (bound) return NO;
+    NSMenuItem *goTo = findMenuItem(self.mainMenu, ^BOOL(NSMenuItem *item) {
+        return item.action == @selector(goToLine:);
+    });
+    if (!goTo) return NO;
+    [goTo.menu update];
+    if (!goTo.isEnabled) return NO;
+    [goTo.menu performActionForItemAtIndex:[goTo.menu indexOfItem:goTo]];
+    return YES;
+}
+
+- (void)sendEvent:(NSEvent *)event {
+    if (event.type == NSEventTypeKeyDown && [self _handleControlG:event]) return;
+    [super sendEvent:event];
+}
+
 /// Find the currently active editor that is recording a macro.
 - (nullable EditorView *)_activeRecordingEditor {
     AppDelegate *appDel = (AppDelegate *)self.delegate;
