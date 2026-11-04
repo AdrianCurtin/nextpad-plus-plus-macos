@@ -472,12 +472,28 @@ foreach(_lang IN LISTS NPP_BUNDLE_LANGUAGES)
             "$<TARGET_BUNDLE_DIR:NotepadPlusPlusMac>/Contents/Resources/${_lang}.lproj/InfoPlist.strings")
 endforeach()
 
+# Embed the Finder Sync extension (target below) in Contents/PlugIns.
+set(NPP_FINDER_APPEX "$<TARGET_BUNDLE_DIR:NotepadPlusPlusMac>/Contents/PlugIns/NextpadFinderSync.appex")
+add_custom_command(TARGET NotepadPlusPlusMac POST_BUILD
+    COMMAND rm -rf "${NPP_FINDER_APPEX}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:NotepadPlusPlusMac>/Contents/PlugIns"
+    COMMAND ditto "$<TARGET_BUNDLE_DIR:NextpadFinderSync>" "${NPP_FINDER_APPEX}"
+    COMMENT "Embedding the Finder Sync extension")
+
 # Ad-hoc code signing — gives the app a stable identity so macOS can
 # remember TCC permission grants (Downloads, Desktop, Documents) across launches.
 # Strip extended attributes first (resource forks / Finder info break codesign).
+# The extension is signed first with its own (sandbox) entitlements; --deep on
+# the app would re-sign it without them, so the app is signed without --deep.
+# Then re-register so LaunchServices and pluginkit see the signed extension.
 add_custom_command(TARGET NotepadPlusPlusMac POST_BUILD
     COMMAND xattr -cr "$<TARGET_BUNDLE_DIR:NotepadPlusPlusMac>"
-    COMMAND codesign --force --deep --sign - "$<TARGET_BUNDLE_DIR:NotepadPlusPlusMac>"
+    COMMAND codesign --force --sign -
+            --entitlements "${CMAKE_SOURCE_DIR}/resources/FinderSync/FinderSync.entitlements"
+            "${NPP_FINDER_APPEX}"
+    COMMAND codesign --force --sign - "$<TARGET_BUNDLE_DIR:NotepadPlusPlusMac>"
+    COMMAND /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
+            -f "$<TARGET_BUNDLE_DIR:NotepadPlusPlusMac>"
     COMMENT "Ad-hoc code signing the app bundle")
 
 set_target_properties(NotepadPlusPlusMac PROPERTIES
@@ -488,6 +504,32 @@ set_target_properties(NotepadPlusPlusMac PROPERTIES
     MACOSX_BUNDLE_BUNDLE_VERSION "1.0.8"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0.8"
 )
+
+# Finder Sync extension: "Edit with Nextpad++" in Finder's context menu for
+# files. Built as an .appex bundle and embedded by the app's POST_BUILD above;
+# it takes the app's version.
+set_source_files_properties("${CMAKE_SOURCE_DIR}/resources/npp.icns"
+    PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+add_executable(NextpadFinderSync MACOSX_BUNDLE
+    src/FinderSync/NppFinderSync.mm
+    "${CMAKE_SOURCE_DIR}/resources/npp.icns")
+get_target_property(_npp_bundle_version NotepadPlusPlusMac MACOSX_BUNDLE_BUNDLE_VERSION)
+get_target_property(_npp_short_version  NotepadPlusPlusMac MACOSX_BUNDLE_SHORT_VERSION_STRING)
+set_target_properties(NextpadFinderSync PROPERTIES
+    BUNDLE_EXTENSION appex
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/resources/FinderSync/Info.plist"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${_npp_bundle_version}"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${_npp_short_version}"
+    COMPILE_FLAGS "-fobjc-arc -fapplication-extension"
+)
+target_link_options(NextpadFinderSync PRIVATE -fapplication-extension -e _NSExtensionMain)
+target_link_libraries(NextpadFinderSync PRIVATE "-framework Cocoa" "-framework FinderSync")
+add_dependencies(NotepadPlusPlusMac NextpadFinderSync)
+# Re-run the app's POST_BUILD (embed and sign) when the extension or its
+# entitlements change, not only when the app itself relinks.
+set_property(TARGET NotepadPlusPlusMac APPEND PROPERTY LINK_DEPENDS
+    "$<TARGET_FILE:NextpadFinderSync>"
+    "${CMAKE_SOURCE_DIR}/resources/FinderSync/FinderSync.entitlements")
 
 target_include_directories(NotepadPlusPlusMac PRIVATE
     src
