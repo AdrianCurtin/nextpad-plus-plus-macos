@@ -310,6 +310,7 @@ static int nppDetectEOLMode(const char *bytes, NSUInteger len) {
     BOOL    _wordWrapEnabled;
     BOOL    _savedWrapBeforeRTL;  // word wrap state before RTL was enabled
     BOOL    _scintillaOverridesApplied;  // YES once Scintilla-command overrides were pushed to this editor's keymap
+    BOOL    _homeEndScrollApplied;       // YES while plain Home/End are bound to scroll to the top/bottom
     BOOL    _isRecordingMacro;
     NSMutableArray<NSDictionary *> *_macroActions;
     NSInteger _untitledIndex;   // unique number for untitled tabs (1-based)
@@ -2440,9 +2441,10 @@ int NppScintillaDefaultKeyCombos(int sciID, int *combos, int maxCombos) {
     }
 
     BOOL hasOverrides = overrides.count > 0;
+    BOOL homeEndScrolls = [[NSUserDefaults standardUserDefaults] boolForKey:kPrefHomeEndScrollsDoc];
     // Zero-impact guard: with no overrides and none ever applied to this editor, leave
     // Scintilla's stock keymap exactly as constructed (identical to pre-Phase-2 behaviour).
-    if (!hasOverrides && !_scintillaOverridesApplied) return;
+    if (!hasOverrides && !_scintillaOverridesApplied && !homeEndScrolls && !_homeEndScrollApplied) return;
 
     ScintillaView *sci = _scintillaView;
 
@@ -2470,6 +2472,24 @@ int NppScintillaDefaultKeyCombos(int sciID, int *combos, int maxCombos) {
     }
 
     _scintillaOverridesApplied = hasOverrides;
+
+    // Mac convention: plain Home/End scroll to the top/bottom of the document and
+    // leave the caret where it is, as in TextEdit and Xcode. With the preference
+    // off, Step A has already restored Scintilla's line start/end (Windows
+    // Notepad++). A key the user bound in shortcuts.xml keeps that binding.
+    if (homeEndScrolls) {
+        BOOL homeBound = NO, endBound = NO;
+        for (NSDictionary *o in overrides) {
+            if ([o[@"keyCode"] intValue] == 0) continue;
+            for (NSNumber *kd in o[@"keyDefs"]) {
+                if (kd.longLongValue == SCK_HOME) homeBound = YES;
+                if (kd.longLongValue == SCK_END)  endBound  = YES;
+            }
+        }
+        if (!homeBound) [sci message:SCI_ASSIGNCMDKEY wParam:SCK_HOME lParam:SCI_SCROLLTOSTART];
+        if (!endBound)  [sci message:SCI_ASSIGNCMDKEY wParam:SCK_END  lParam:SCI_SCROLLTOEND];
+    }
+    _homeEndScrollApplied = homeEndScrolls;
 
     // The RTL caret-key swap sits on top of the keymap; re-assert it if this editor is
     // currently RTL, since Step A/B may have rewritten the Left/Right caret bindings.
@@ -2759,6 +2779,9 @@ static NSString *nppDefaultWordChars(ScintillaView *sci) {
 
 - (void)_preferencesChanged:(NSNotification *)note {
     [self applyPreferencesFromDefaults];
+    // Rebind Home/End when that preference changed; the key overrides own them.
+    if ([[NSUserDefaults standardUserDefaults] boolForKey:kPrefHomeEndScrollsDoc] != _homeEndScrollApplied)
+        [self applyScintillaKeyOverrides];
     // Re-apply theme colors if the notification carries a theme-change flag
     NSNumber *themeChanged = note.userInfo[@"themeChanged"];
     if (themeChanged.boolValue) [self applyThemeColors];
