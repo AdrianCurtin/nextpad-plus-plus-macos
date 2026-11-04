@@ -13,9 +13,25 @@
 #import "NppLangsManager.h"
 #import "EditorView.h"
 #import "ShortcutMapperWindowController.h"
+#include <sys/stat.h>
 
 // Files opened from a folder beyond this count trigger a confirmation.
 static const NSUInteger kFolderOpenConfirmThreshold = 20;
+
+// "Edit with Nextpad++" Finder Sync extension (src/FinderSync/NppFinderSync.mm,
+// which repeats these names). The extension is sandboxed, so LaunchServices will
+// not let it open files in Nextpad++; it posts their paths here instead. Edit
+// notification object: JSON {"app": "<target Nextpad++.app path>", "files": [...]}.
+// Ready notification object: this app's bundle path, posted at launch so the
+// extension can send files it queued while the app was not running.
+static NSString *const kNppFinderSyncEditNotification  = @"org.nextpadplusplus.mac.FinderSync.edit";
+static NSString *const kNppFinderSyncReadyNotification = @"org.nextpadplusplus.mac.FinderSync.ready";
+
+/// Symlinks resolved (so /tmp and /private/tmp compare equal), for comparing app paths.
+static NSString *NppCanonicalPath(NSString *path) {
+    if (path.length == 0) return @"";
+    return [NSURL fileURLWithPath:path].URLByResolvingSymlinksInPath.path ?: path;
+}
 
 // ── Unclean-exit detection ──────────────────────────────────────────────────
 // running.marker exists from launch until -applicationWillTerminate:. Finding
@@ -94,8 +110,24 @@ static void NppRecoveryDone(void) {
     if (self) {
         _windowControllers = [NSMutableArray array];
         _pendingFilePaths  = [NSMutableArray array];
+        // Registered here, before launch finishes, so requests from the Finder
+        // Sync extension that arrive during launch are queued, not lost.
+        [[NSDistributedNotificationCenter defaultCenter]
+            addObserver:self selector:@selector(_finderSyncEditRequest:)
+                   name:kNppFinderSyncEditNotification object:nil
+            suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
     }
     return self;
+}
+
+- (void)applicationWillFinishLaunching:(NSNotification *)notification {
+    // Tell the Finder Sync extension this copy can take requests; it waits for
+    // this after launching the app with files selected.
+    [[NSDistributedNotificationCenter defaultCenter]
+        postNotificationName:kNppFinderSyncReadyNotification
+                      object:NppCanonicalPath(NSBundle.mainBundle.bundlePath)
+                    userInfo:nil
+          deliverImmediately:YES];
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
@@ -635,10 +667,40 @@ static void NppRecoveryDone(void) {
         if (s.length) [paths addObject:s];
     }
     if (paths.count == 0) return;
+    [self _openRequestedPaths:paths];
+}
 
-    // Service can cold-start the app: queue until launch completes, where
-    // applicationDidFinishLaunching drains _pendingFilePaths (with folder
-    // expansion) and surfaces the window.
+/// "Edit with Nextpad++" request from the Finder Sync extension. Several copies
+/// of Nextpad++ with the same bundle id can be running (the installed app and
+/// dev builds), and every one receives the notification, so only the copy whose
+/// bundle path matches "app" acts. Only existing regular files are opened; the
+/// extension offers the item for files only, and folders go through the Service.
+- (void)_finderSyncEditRequest:(NSNotification *)note {
+    if (![note.object isKindOfClass:[NSString class]]) return;
+    NSData *data = [(NSString *)note.object dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *request = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    if (![request isKindOfClass:[NSDictionary class]]) return;
+    NSString *app = request[@"app"];
+    NSArray *files = request[@"files"];
+    if (![app isKindOfClass:[NSString class]] || ![files isKindOfClass:[NSArray class]]) return;
+    if (![NppCanonicalPath(app) isEqualToString:NppCanonicalPath(NSBundle.mainBundle.bundlePath)]) return;
+
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    for (id file in files) {
+        if (![file isKindOfClass:[NSString class]] || ![file isAbsolutePath]) continue;
+        struct stat st;
+        if (stat([file fileSystemRepresentation], &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        [paths addObject:[file stringByStandardizingPath]];
+    }
+    if (paths.count == 0) return;
+    [self _openRequestedPaths:paths];
+}
+
+/// Shared tail of the Finder Service and Finder Sync handlers. Either can
+/// cold-start the app: queue until launch completes, where
+/// applicationDidFinishLaunching drains _pendingFilePaths (with folder
+/// expansion) and surfaces the window.
+- (void)_openRequestedPaths:(NSArray<NSString *> *)paths {
     if (!_didFinishLaunching) {
         [_pendingFilePaths addObjectsFromArray:paths];
         return;

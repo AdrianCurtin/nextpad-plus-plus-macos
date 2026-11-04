@@ -126,30 +126,17 @@
                 <string>public.folder</string>
             </array>
         </dict>
-        <!-- Any file. The Finder Sync extension ("Edit with Nextpad++") is
-             sandboxed, and LaunchServices only lets a sandboxed caller open a
-             file in an app that claims its type (kLSAppDoesNotClaimTypeErr).
-             Rank None claims every type without offering Nextpad++ as a
-             handler, so Open With and default apps are unchanged. -->
-        <dict>
-            <key>CFBundleTypeName</key>
-            <string>Any File</string>
-            <key>CFBundleTypeRole</key>
-            <string>Editor</string>
-            <key>LSHandlerRank</key>
-            <string>None</string>
-            <key>LSItemContentTypes</key>
-            <array>
-                <string>public.data</string>
-            </array>
-        </dict>
     </array>
     <!-- Finder right-click "Open with Nextpad++" (issue #126).
          A macOS Service (not a Finder Sync extension): NSRequiredContext
          NSTextContent=FilePath makes macOS surface it inline at the bottom of
          the Finder context menu when files/folders are selected. Handled by
          AppDelegate openFilesService:userData:error:; NSPortName matches
-         CFBundleName/CFBundleExecutable ("Nextpad++"). -->
+         CFBundleName/CFBundleExecutable ("Nextpad++").
+         Files also get "Edit with Nextpad++" from the Finder Sync extension
+         (Contents/PlugIns/NextpadFinderSync.appex). It sends the paths to the
+         app in a distributed notification instead of through LaunchServices,
+         so it needs no document type claim here. -->
     <key>NSServices</key>
     <array>
         <dict>
