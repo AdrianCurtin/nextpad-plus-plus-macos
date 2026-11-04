@@ -1,16 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<!-- Finder Sync extensions must be sandboxed. The extension asks
-     LaunchServices to open Finder's selection in Nextpad++, which a sandboxed
-     caller may only do for files it can read (otherwise permErr, -54), so it
-     gets read-only access to the whole file system. It writes nothing. -->
+<!-- Finder Sync extensions must be sandboxed. The extension needs no file
+     access: it reads Finder's selection as URLs and sends the paths to
+     Nextpad++ in a distributed notification, and the app (not sandboxed)
+     opens them. -->
 <dict>
     <key>com.apple.security.app-sandbox</key>
     <true/>
-    <key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
-    <array>
-        <string>/</string>
-    </array>
 </dict>
 </plist>
