@@ -66,6 +66,9 @@
 #include "MarginView.h"
 #include "EditView.h"
 #include "ElapsedPeriod.h"
+// LOCAL CHANGE: performance probes (src/perf/NppPerfProbe.h); inert unless
+// the app turns diagnostics on.
+#include "NppPerfProbe.h"
 
 using namespace Scintilla;
 using namespace Scintilla::Internal;
@@ -397,6 +400,20 @@ void LayoutSegments(IPositionCache *pCache,
 void EditView::LayoutLine(const EditModel &model, Surface *surface, const ViewStyle &vstyle, LineLayout *ll, int width, bool callerMultiThreaded) {
 	if (!ll)
 		return;
+	// LOCAL CHANGE: performance probes. Classify the layout cache state on
+	// entry: lines = full hit, positions = rewrap only, checkTextAndStyle =
+	// compare text and styles (style clock moved), invalid = full layout.
+	NPP_PERF_SCOPE_FINE("EditView.LayoutLine", "line=%ld validity=%d", static_cast<long>(ll->LineNumber()), static_cast<int>(ll->validity));
+	if (NppPerf::On()) {
+		switch (ll->validity) {
+		case LineLayout::ValidLevel::invalid: NPP_PERF_COUNT("LayoutCache.miss"); break;
+		case LineLayout::ValidLevel::checkTextAndStyle: NPP_PERF_COUNT("LayoutCache.check"); break;
+		case LineLayout::ValidLevel::positions: NPP_PERF_COUNT("LayoutCache.positionsOnly"); break;
+		case LineLayout::ValidLevel::lines: NPP_PERF_COUNT("LayoutCache.hit"); break;
+		}
+		if (callerMultiThreaded)
+			NPP_PERF_COUNT("EditView.LayoutLine.fromWrapThread");
+	}
 	const Sci::Line line = ll->LineNumber();
 	PLATFORM_ASSERT(line < model.pdoc->LinesTotal());
 	PLATFORM_ASSERT(ll->chars);
@@ -436,8 +453,12 @@ void EditView::LayoutLine(const EditModel &model, Surface *surface, const ViewSt
 		} else {
 			ll->validity = LineLayout::ValidLevel::invalid;
 		}
+		// LOCAL CHANGE: performance probe.
+		NPP_PERF_COUNT_N("LayoutCache.checkFailed", ll->validity == LineLayout::ValidLevel::invalid ? 1 : 0);
 	}
 	if (ll->validity == LineLayout::ValidLevel::invalid) {
+		// LOCAL CHANGE: performance probe for a full layout of one line.
+		NPP_PERF_SCOPE_FINE("EditView.LayoutLine.full", "line=%ld", static_cast<long>(line));
 		ll->widthLine = LineLayout::wrapWidthInfinite;
 		ll->lines = 1;
 		if (vstyle.edgeState == EdgeVisualStyle::Background) {
@@ -480,6 +501,9 @@ void EditView::LayoutLine(const EditModel &model, Surface *surface, const ViewSt
 		while (bfLayout.More()) {
 			segments.push_back(bfLayout.Next());
 		}
+		// LOCAL CHANGE: performance probes (layout size).
+		NPP_PERF_VALUE("EditView.LayoutLine.chars", numCharsInLine);
+		NPP_PERF_VALUE("EditView.LayoutLine.segments", segments.size());
 
 		ll->ClearPositions();
 
@@ -501,6 +525,9 @@ void EditView::LayoutLine(const EditModel &model, Surface *surface, const ViewSt
 			// If only 1 thread needed then use the main thread, else spin up multiple
 			const std::launch policy = (multiThreaded) ? std::launch::async : std::launch::deferred;
 
+			// LOCAL CHANGE: performance probes (segment measuring).
+			NPP_PERF_VALUE("EditView.LayoutLine.threads", threads);
+			NPP_PERF_SCOPE_FINE("EditView.LayoutLine.measure", "segments=%lu threads=%lu", static_cast<unsigned long>(segments.size()), static_cast<unsigned long>(threads));
 			std::vector<std::future<void>> futures;
 			for (size_t th = 0; th < threads; th++) {
 				// Find relative positions of everything except for tabs
@@ -589,6 +616,8 @@ void EditView::LayoutLine(const EditModel &model, Surface *surface, const ViewSt
 			// Check for wrapIndent minimum
 			if ((FlagSet(vstyle.wrap.visualFlags, WrapVisualFlag::Start)) && (ll->wrapIndent < vstyle.aveCharWidth))
 				ll->wrapIndent = vstyle.aveCharWidth; // Indent to show start visual
+			// LOCAL CHANGE: performance probe.
+			NPP_PERF_SCOPE_FINE("EditView.LayoutLine.wrap", "line=%ld width=%d", static_cast<long>(line), width);
 			ll->WrapLine(model.pdoc, posLineStart, vstyle.wrap.state, width);
 		}
 		ll->validity = LineLayout::ValidLevel::lines;
@@ -1696,6 +1725,7 @@ void DrawBackground(Surface *surface, const EditModel &model, const ViewStyle &v
 		if (fillPending && (back == backPending) && (rc.left == rcPending.right) &&
 			(rc.top == rcPending.top) && (rc.bottom == rcPending.bottom)) {
 			rcPending.right = rc.right;
+			NPP_PERF_COUNT("EditView.DrawBackground.fillsMerged");
 			return;
 		}
 		flushFill();
@@ -2384,6 +2414,7 @@ void EditView::DrawForeground(Surface *surface, const EditModel &model, const Vi
 								textDraw = mergedText;
 								rcDraw = rcLine.WithHorizontalBounds(
 									Interval{ rcSegment.left, ll->positions[endRun] + horizontalOffset });
+								NPP_PERF_COUNT_N("EditView.DrawForeground.segmentsMerged", segmentsMerged);
 							}
 						}
 						surface->DrawTextTransparent(rcDraw, textFont,
@@ -2522,6 +2553,8 @@ void EditView::DrawLine(Surface *surface, const EditModel &model, const ViewStyl
 		DrawAnnotation(surface, model, vsDraw, ll, line, xOrigin, rcLine, subLine, phase);
 		return; // No further drawing
 	}
+	// LOCAL CHANGE: performance probe (one display line, one phase pass).
+	NPP_PERF_SCOPE_FINE("EditView.DrawLine", "line=%ld sub=%d phase=%d chars=%d", static_cast<long>(line), subLine, static_cast<int>(phase), ll->numCharsInLine);
 
 	const bool clipLine = !bufferedDraw && !LinesOverlap();
 	if (clipLine) {
@@ -2553,6 +2586,8 @@ void EditView::DrawLine(Surface *surface, const EditModel &model, const ViewStyl
 
 	if (phasesDraw != PhasesDraw::One) {
 		if (FlagSet(phase, DrawPhase::back)) {
+			// LOCAL CHANGE: performance probe.
+			NPP_PERF_SCOPE_FINE("EditView.DrawLine.back");
 			DrawBackground(surface, model, vsDraw, ll,
 				xStart, rcLine, subLine, lineRange, posLineStart,
 				background);
@@ -2567,6 +2602,8 @@ void EditView::DrawLine(Surface *surface, const EditModel &model, const ViewStyl
 		}
 
 		if (FlagSet(phase, DrawPhase::indicatorsBack)) {
+			// LOCAL CHANGE: performance probe.
+			NPP_PERF_SCOPE_FINE("EditView.DrawLine.indicatorsBack");
 			DrawIndicators(surface, model, vsDraw, ll, line, xStart, rcLine, subLine,
 				lineRangeIncludingEnd.end, true, tabWidthMinimumPixels);
 			DrawEdgeLine(surface, vsDraw, ll, xStart, rcLine, lineRange);
@@ -2575,6 +2612,8 @@ void EditView::DrawLine(Surface *surface, const EditModel &model, const ViewStyl
 	}
 
 	if (FlagSet(phase, DrawPhase::text)) {
+		// LOCAL CHANGE: performance probe (selection under text plus the text itself).
+		NPP_PERF_SCOPE_FINE("EditView.DrawLine.text");
 		if (vsDraw.selection.visible) {
 			DrawTranslucentSelection(surface, model, vsDraw, ll,
 				line, xStart, rcLine, subLine, lineRange, tabWidthMinimumPixels, Layer::UnderText);
@@ -2590,6 +2629,8 @@ void EditView::DrawLine(Surface *surface, const EditModel &model, const ViewStyl
 	}
 
 	if (FlagSet(phase, DrawPhase::indicatorsFore)) {
+		// LOCAL CHANGE: performance probe.
+		NPP_PERF_SCOPE_FINE("EditView.DrawLine.indicatorsFore");
 		DrawIndicators(surface, model, vsDraw, ll, line, xStart, rcLine, subLine,
 			lineRangeIncludingEnd.end, false, tabWidthMinimumPixels);
 	}
@@ -2622,6 +2663,12 @@ void EditView::DrawLine(Surface *surface, const EditModel &model, const ViewStyl
 
 void EditView::PaintText(Surface *surfaceWindow, const EditModel &model, const ViewStyle &vsDraw,
 	PRectangle rcArea, PRectangle rcClient) {
+	// LOCAL CHANGE: performance probe for the whole text paint of one rectangle.
+	NPP_PERF_SCOPE("EditView.PaintText", "area=%.0f,%.0f,%.0f,%.0f top=%ld xOffset=%d buffered=%d phases=%d",
+		rcArea.left, rcArea.top, rcArea.Width(), rcArea.Height(), static_cast<long>(model.TopLineOfMain()),
+		model.xOffset, bufferedDraw ? 1 : 0, static_cast<int>(phasesDraw));
+	NPP_PERF_VALUE("EditView.PaintText.areaHeightPx", rcArea.Height());
+	NPP_PERF_VALUE("EditView.PaintText.areaWidthPx", rcArea.Width());
 	// Allow text at start of line to overlap 1 pixel into the margin as this displays
 	// serifs and italic stems for aliased text.
 	const int leftTextOverlap = ((model.xOffset == 0) && (vsDraw.leftMarginWidth > 0)) ? 1 : 0;
@@ -2673,6 +2720,9 @@ void EditView::PaintText(Surface *surfaceWindow, const EditModel &model, const V
 			(vsDraw.braceBadLightIndicatorSet && (model.bracesMatchStyle == StyleBraceBad)));
 
 		Sci::Line lineDocPrevious = -1;	// Used to avoid laying out one document line multiple times
+		// LOCAL CHANGE: performance probes (lines and passes per paint).
+		int perfLinesDrawn = 0;
+		int perfPasses = 0;
 		std::shared_ptr<LineLayout> ll;
 		DrawPhase phase = DrawPhase::all;
 		if ((phasesDraw == PhasesDraw::Multiple) && !bufferedDraw) {
@@ -2696,6 +2746,8 @@ void EditView::PaintText(Surface *surfaceWindow, const EditModel &model, const V
 				ElapsedPeriod ep;
 #endif
 				if (lineDoc != lineDocPrevious) {
+					// LOCAL CHANGE: performance probe (layout inside paint).
+					NPP_PERF_SCOPE_FINE("EditView.PaintText.layout", "line=%ld", static_cast<long>(lineDoc));
 					ll = RetrieveLineLayout(lineDoc, model);
 					LayoutLine(model, surface, vsDraw, ll.get(), model.wrapWidth);
 					lineDocPrevious = lineDoc;
@@ -2731,6 +2783,7 @@ void EditView::PaintText(Surface *surfaceWindow, const EditModel &model, const V
 					}
 
 					DrawLine(surface, model, vsDraw, ll.get(), lineDoc, visibleLine, xOrigin, rcLine, subLine, phase);
+					perfLinesDrawn++;	// LOCAL CHANGE: performance probe.
 #if defined(TIME_PAINTING)
 					durPaint += ep.Duration(true);
 #endif
@@ -2746,6 +2799,8 @@ void EditView::PaintText(Surface *surfaceWindow, const EditModel &model, const V
 					}
 
 					if (bufferedDraw) {
+						// LOCAL CHANGE: performance probe (line pixmap copy).
+						NPP_PERF_SCOPE_FINE("EditView.PaintText.copyLine");
 						const Point from = Point::FromInts(vsDraw.textStart - leftTextOverlap, 0);
 						const PRectangle rcCopyArea = PRectangle::FromInts(vsDraw.textStart - leftTextOverlap, yposScreen,
 							static_cast<int>(rcClient.right - vsDraw.rightMarginWidth),
@@ -2768,12 +2823,16 @@ void EditView::PaintText(Surface *surfaceWindow, const EditModel &model, const V
 				visibleLine++;
 			}
 
+			perfPasses++;	// LOCAL CHANGE: performance probe.
 			if (phase >= DrawPhase::carets) {
 				break;
 			}
 			phase = static_cast<DrawPhase>(static_cast<int>(phase) * 2);
 		}
 		ll.reset();
+		// LOCAL CHANGE: performance probes.
+		NPP_PERF_VALUE("EditView.PaintText.lineDraws", perfLinesDrawn);
+		NPP_PERF_VALUE("EditView.PaintText.passes", perfPasses);
 #if defined(TIME_PAINTING)
 		if (durPaint < 0.00000001)
 			durPaint = 0.00000001;

@@ -37,6 +37,9 @@
 #import "ScintillaView.h"
 #import "ScintillaCocoa.h"
 #import "PlatCocoa.h"
+// LOCAL CHANGE: performance probes (src/perf/NppPerfProbe.h); inert unless
+// the app turns diagnostics on.
+#include "NppPerfProbe.h"
 
 using namespace Scintilla;
 using namespace Scintilla::Internal;
@@ -529,6 +532,7 @@ void ScintillaCocoa::ObserverRemove() {
 //--------------------------------------------------------------------------------------------------
 
 void ScintillaCocoa::IdleWork() {
+	NPP_PERF_SCOPE("ScintillaCocoa.IdleWork");	// LOCAL CHANGE: performance probe (run loop observer).
 	Editor::IdleWork();
 	ObserverRemove();
 }
@@ -791,6 +795,7 @@ Scintilla::Internal::Point ScintillaCocoa::ConvertPoint(NSPoint point) {
  * Do not clip like superclass as Cocoa is not reporting all of prepared area.
  */
 void ScintillaCocoa::RedrawRect(PRectangle rc) {
+	NPP_PERF_COUNT("ScintillaCocoa.RedrawRect");	// LOCAL CHANGE: performance probe.
 	if (!rc.Empty())
 		wMain.InvalidateRectangle(rc);
 }
@@ -798,6 +803,7 @@ void ScintillaCocoa::RedrawRect(PRectangle rc) {
 //--------------------------------------------------------------------------------------------------
 
 void ScintillaCocoa::DiscardOverdraw() {
+	NPP_PERF_COUNT("ScintillaCocoa.DiscardOverdraw");	// LOCAL CHANGE: performance probe.
 #if MAC_OS_X_VERSION_MAX_ALLOWED > 1080
 	// If running on 10.9, reset prepared area to visible area
 	NSView *content = ContentView();
@@ -813,6 +819,12 @@ void ScintillaCocoa::DiscardOverdraw() {
  * Ensure all of prepared content is also redrawn.
  */
 void ScintillaCocoa::Redraw() {
+	NPP_PERF_COUNT("ScintillaCocoa.Redraw");	// LOCAL CHANGE: performance probe (full text and margin invalidation).
+	// LOCAL CHANGE: performance probe. A full redraw requested while the text is
+	// being painted (typically from an SCN_UPDATEUI handler inside Paint) leaves
+	// the margin, painted earlier in the same pass, invalid again, which costs
+	// a second display pass.
+	NPP_PERF_COUNT_N("ScintillaCocoa.Redraw.duringPaint", paintState == PaintState::painting ? 1 : 0);
 	wMargin.InvalidateAll();
 	DiscardOverdraw();
 	wMain.InvalidateAll();
@@ -989,6 +1001,8 @@ sptr_t ScintillaCocoa::DefWndProc(Message, uptr_t, sptr_t) {
  * Handle any ScintillaCocoa-specific ticking or call superclass.
  */
 void ScintillaCocoa::TickFor(TickReason reason) {
+	// LOCAL CHANGE: performance probe (reason: 0 caret, 1 scroll, 2 widen, 3 dwell, 4 platform).
+	NPP_PERF_SCOPE("ScintillaCocoa.TickFor", "reason=%d", static_cast<int>(reason));
 	if (reason == TickReason::platform) {
 		DragScroll();
 	} else {
@@ -1868,6 +1882,8 @@ bool ScintillaCocoa::HaveMouseCapture() {
  * Synchronously paint a rectangle of the window.
  */
 bool ScintillaCocoa::SyncPaint(void *gc, PRectangle rc) {
+	// LOCAL CHANGE: performance probe.
+	NPP_PERF_SCOPE("ScintillaCocoa.SyncPaint", "rect=%.0f,%.0f,%.0f,%.0f", rc.left, rc.top, rc.Width(), rc.Height());
 	paintState = PaintState::painting;
 	rcPaint = rc;
 	PRectangle rcText = GetTextRectangle();
@@ -1886,6 +1902,7 @@ bool ScintillaCocoa::SyncPaint(void *gc, PRectangle rc) {
 	sw->Release();
 	paintState = PaintState::notPainting;
 	if (!succeeded) {
+		NPP_PERF_EVENT("ScintillaCocoa.SyncPaint.abandoned");	// LOCAL CHANGE: performance probe.
 		NSView *marginView = (__bridge NSView *)(wMargin.GetID());
 		[marginView setNeedsDisplay: YES];
 	}
@@ -1898,6 +1915,8 @@ bool ScintillaCocoa::SyncPaint(void *gc, PRectangle rc) {
  * Paint the margin into the SCIMarginView space.
  */
 void ScintillaCocoa::PaintMargin(NSRect aRect) {
+	// LOCAL CHANGE: performance probe.
+	NPP_PERF_SCOPE("ScintillaCocoa.PaintMargin", "rect=%.0f,%.0f,%.0f,%.0f", aRect.origin.x, aRect.origin.y, aRect.size.width, aRect.size.height);
 	CGContextRef gc = CGContextCurrent();
 
 	PRectangle rc = NSRectToPRectangle(aRect);
@@ -1925,14 +1944,21 @@ void ScintillaCocoa::PaintMargin(NSRect aRect) {
  * @param rect The area that will be drawn, given in the sender's coordinate system.
  */
 void ScintillaCocoa::WillDraw(NSRect rect) {
+	// LOCAL CHANGE: performance probes (styling and SCN_UPDATEUI before AppKit draws).
+	NPP_PERF_SCOPE("ScintillaCocoa.WillDraw", "rect=%.0f,%.0f,%.0f,%.0f", rect.origin.x, rect.origin.y, rect.size.width, rect.size.height);
+	NPP_PERF_VALUE("ScintillaCocoa.WillDraw.heightPt", rect.size.height);
 	RefreshStyleData();
 	PRectangle rcWillDraw = NSRectToPRectangle(rect);
 	const Sci::Position posAfterArea = PositionAfterArea(rcWillDraw);
 	const Sci::Position posAfterMax = PositionAfterMaxStyling(posAfterArea, true);
-	pdoc->StyleToAdjustingLineDuration(posAfterMax);
+	{
+		NPP_PERF_SCOPE("ScintillaCocoa.WillDraw.style", "to=%ld", static_cast<long>(posAfterMax));
+		pdoc->StyleToAdjustingLineDuration(posAfterMax);
+	}
 	StartIdleStyling(posAfterMax < posAfterArea);
 	NotifyUpdateUI();
 	if (WrapLines(WrapScope::wsVisible)) {
+		NPP_PERF_EVENT("ScintillaCocoa.WillDraw.wrapRedraw");
 		// Wrap may have reduced number of lines so more lines may need to be styled
 		const Sci::Position posAfterAreaWrapped = PositionAfterArea(rcWillDraw);
 		pdoc->EnsureStyledTo(posAfterAreaWrapped);
@@ -1955,6 +1981,8 @@ void ScintillaCocoa::ScrollText(Sci::Line) {
  * Modifies the vertical scroll position to make the current top line show up as such.
  */
 void ScintillaCocoa::SetVerticalScrollPos() {
+	// LOCAL CHANGE: performance probe (clip view scrollToPoint + scroller sync).
+	NPP_PERF_SCOPE("ScintillaCocoa.SetVerticalScrollPos", "top=%ld", static_cast<long>(topLine));
 	Editor::SetVerticalScrollPos();
 	NSScrollView *scrollView = ScrollContainer();
 	if (scrollView) {
@@ -1971,6 +1999,7 @@ void ScintillaCocoa::SetVerticalScrollPos() {
  * Modifies the horizontal scroll position to match xOffset.
  */
 void ScintillaCocoa::SetHorizontalScrollPos() {
+	NPP_PERF_SCOPE("ScintillaCocoa.SetHorizontalScrollPos", "xOffset=%d", xOffset);	// LOCAL CHANGE: performance probe.
 	PRectangle textRect = GetTextRectangle();
 
 	int maxXOffset = scrollWidth - static_cast<int>(textRect.Width());
@@ -2000,6 +2029,7 @@ void ScintillaCocoa::SetHorizontalScrollPos() {
  */
 bool ScintillaCocoa::ModifyScrollBars(Sci::Line nMax, Sci::Line nPage) {
 #pragma unused(nMax, nPage)
+	NPP_PERF_COUNT("ScintillaCocoa.ModifyScrollBars");	// LOCAL CHANGE: performance probe.
 	return SetScrollingSize();
 }
 
@@ -2011,6 +2041,8 @@ bool ScintillaCocoa::ModifyScrollBars(Sci::Line nMax, Sci::Line nPage) {
  */
 
 bool ScintillaCocoa::SetScrollingSize() {
+	// LOCAL CHANGE: performance probe (document view frame and scroller update).
+	NPP_PERF_SCOPE("ScintillaCocoa.SetScrollingSize");
 	bool changes = false;
 	SCIContentView *inner = ContentView();
 	if (!enteredSetScrollingSize) {
@@ -2032,6 +2064,8 @@ bool ScintillaCocoa::SetScrollingSize() {
 		const NSRect contentRect = NSMakeRect(0, 0, docWidth, docHeight);
 		changes = !CGSizeEqualToSize(contentRect.size, inner.frame.size);
 		if (changes) {
+			// LOCAL CHANGE: performance probe.
+			NPP_PERF_SCOPE("ScintillaCocoa.SetScrollingSize.setFrame", "w=%.0f h=%.0f", docWidth, docHeight);
 			inner.frame = contentRect;
 		}
 		scrollView.hasVerticalScroller = verticalScrollBarVisible;
@@ -2046,6 +2080,7 @@ bool ScintillaCocoa::SetScrollingSize() {
 //--------------------------------------------------------------------------------------------------
 
 void ScintillaCocoa::Resize() {
+	NPP_PERF_SCOPE("ScintillaCocoa.Resize");	// LOCAL CHANGE: performance probe.
 	SetScrollingSize();
 
 	const PRectangle rcClient = GetClientRectangle();
@@ -2060,6 +2095,8 @@ void ScintillaCocoa::Resize() {
  * Update fields to match scroll position after receiving a notification that the user has scrolled.
  */
 void ScintillaCocoa::UpdateForScroll() {
+	// LOCAL CHANGE: performance probe (clip view bounds changed: user or programmatic scroll).
+	NPP_PERF_SCOPE("ScintillaCocoa.UpdateForScroll");
 	Point ptOrigin = GetVisibleOriginInMain();
 	const int xOffsetNew = static_cast<int>(ptOrigin.x);
 	// LOCAL CHANGE: repaint the whole text area when the user scrolls
@@ -2076,7 +2113,10 @@ void ScintillaCocoa::UpdateForScroll() {
 	// 1 ms with the line layouts already cached. Scintilla's own horizontal scrolls
 	// (HorizontalScrollTo) already call Redraw and set xOffset before this runs.
 	if (xOffsetNew != xOffset) {
+		// LOCAL CHANGE: performance probe (horizontal distance of this scroll step).
+		NPP_PERF_VALUE("ScintillaCocoa.UpdateForScroll.dxPt", std::abs(xOffsetNew - xOffset));
 		if (@available(macOS 26.0, *)) {
+			NPP_PERF_COUNT("ScintillaCocoa.UpdateForScroll.hscrollRepaint");
 			wMain.InvalidateAll();
 		}
 	}
@@ -2143,6 +2183,9 @@ void ScintillaCocoa::NotifyFocus(bool focus) {
  * @param scn The notification to send.
  */
 void ScintillaCocoa::NotifyParent(NotificationData scn) {
+	// LOCAL CHANGE: performance probe (every SCN_* delivered to the container,
+	// including the accessibility posts below).
+	NPP_PERF_SCOPE("ScintillaCocoa.NotifyParent", "code=%u updated=0x%x", static_cast<unsigned>(scn.nmhdr.code), static_cast<unsigned>(scn.updated));
 	scn.nmhdr.hwndFrom = (void *) this;
 	scn.nmhdr.idFrom = GetCtrlID();
 	if (notifyProc != NULL)
@@ -2150,6 +2193,7 @@ void ScintillaCocoa::NotifyParent(NotificationData scn) {
 	if (delegate)
 		[delegate notification: reinterpret_cast<SCNotification *>(&scn)];
 	if (scn.nmhdr.code == Notification::UpdateUI) {
+		NPP_PERF_SCOPE("ScintillaCocoa.NotifyParent.accessibility");	// LOCAL CHANGE: performance probe.
 		NSView *content = ContentView();
 		if (FlagSet(scn.updated, Update::Content)) {
 			NSAccessibilityPostNotification(content, NSAccessibilityValueChangedNotification);
@@ -2201,6 +2245,7 @@ void ScintillaCocoa::TimerFired(NSTimer *timer) {
 //--------------------------------------------------------------------------------------------------
 
 void ScintillaCocoa::IdleTimerFired() {
+	NPP_PERF_SCOPE("ScintillaCocoa.IdleTimerFired");	// LOCAL CHANGE: performance probe.
 	bool more = Idle();
 	if (!more)
 		SetIdle(false);
@@ -2346,6 +2391,7 @@ static bool ScintillaCommandKey(UniChar originalKey, NSEventModifierFlags modifi
 //--------------------------------------------------------------------------------------------------
 
 bool ScintillaCocoa::KeyboardInput(NSEvent *event) {
+	NPP_PERF_SCOPE("ScintillaCocoa.KeyboardInput", "keyCode=%u", static_cast<unsigned>(event.keyCode));	// LOCAL CHANGE: performance probe.
 	// For now filter out function keys.
 	NSString *input = event.charactersIgnoringModifiers;
 

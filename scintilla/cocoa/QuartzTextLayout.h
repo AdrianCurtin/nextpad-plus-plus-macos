@@ -14,6 +14,8 @@
 #include <Cocoa/Cocoa.h>
 
 #include "QuartzTextStyle.h"
+// LOCAL CHANGE: performance probes (src/perf/NppPerfProbe.h).
+#include "NppPerfProbe.h"
 
 
 class QuartzTextLayout {
@@ -39,7 +41,11 @@ public:
 
 		mString = ::CFAttributedStringCreate(NULL, str, stringAttribs);
 
-		mLine = ::CTLineCreateWithAttributedString(mString);
+		{
+			// LOCAL CHANGE: performance probe (CoreText typesetting of one run).
+			NPP_PERF_SCOPE_FINE("CoreText.CTLineCreate", "utf16=%ld", static_cast<long>(stringLength));
+			mLine = ::CTLineCreateWithAttributedString(mString);
+		}
 
 		CFRelease(str);
 	}
@@ -69,6 +75,7 @@ public:
 		::CGContextSetTextPosition(gc, x, y);
 
 		// And finally, draw!
+		NPP_PERF_SCOPE_FINE("CoreText.CTLineDraw", "utf16=%ld", static_cast<long>(stringLength));	// LOCAL CHANGE: performance probe.
 		::CTLineDraw(mLine, gc);
 	}
 
