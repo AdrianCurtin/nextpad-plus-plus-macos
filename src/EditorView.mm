@@ -27,6 +27,8 @@
 #include "SciLexer.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <vector>
+#include <algorithm>
+#include <string>
 
 NSNotificationName const EditorViewCursorDidMoveNotification = @"EditorViewCursorDidMoveNotification";
 NSNotificationName const EditorViewDidGainFocusNotification  = @"EditorViewDidGainFocusNotification";
@@ -230,6 +232,7 @@ static NSInteger _untitledCounter = 0;
 // Bumped whenever an editor clears the link indicator over its whole
 // document; invalidates every editor's link scan cache (clones share it).
 static NSUInteger nppLinkFullClearGeneration = 0;
+static BOOL nppLinkVerifyEnabled(void);
 
 // Map a CFStringBuiltInEncoding to NSStringEncoding (short alias for CFStringConvertEncodingToNSStringEncoding)
 static inline NSStringEncoding nppEnc(CFStringEncoding cf) {
@@ -4037,6 +4040,8 @@ static const int kHistoryMask = (1 << SC_MARKNUM_HISTORY_MODIFIED);
         }
         if (rangeCount == 0) {
             NPP_PERF_COUNT("EditorView.updateClickableLinks.cached");
+            if (nppLinkVerifyEnabled())
+                [self _verifyClickableLinksFromLine:docFirst toLine:docLast active:active];
             return;
         }
         _linkScanFirst = MIN(_linkScanFirst, docFirst);
@@ -4061,6 +4066,86 @@ static const int kHistoryMask = (1 << SC_MARKNUM_HISTORY_MODIFIED);
         // the cache so the next update scans the whole visible range again.
         if (![self _markClickableLinksFromLine:ranges[i][0] toLine:ranges[i][1] active:active])
             _linkScanFirst = -1;
+    }
+    if (nppLinkVerifyEnabled())
+        [self _verifyClickableLinksFromLine:docFirst toLine:docLast active:active];
+}
+
+// Diagnostics: with NPP_LINK_VERIFY=1 in the environment, every link update
+// rescans the whole visible range the way it was done before the scan cache
+// and compares the result with the indicator runs in the document. Counts
+// EditorView.linkVerify.checked, .mismatch and .skipped (ranges over the
+// byte budget) and logs the first mismatches. Off by default; costs one
+// cached getenv check per update.
+static BOOL nppLinkVerifyEnabled(void) {
+    static BOOL enabled;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        const char *v = getenv("NPP_LINK_VERIFY");
+        enabled = v && *v && strcmp(v, "0") != 0;
+    });
+    return enabled;
+}
+
+- (void)_verifyClickableLinksFromLine:(sptr_t)docFirst toLine:(sptr_t)docLast active:(BOOL)active {
+    ScintillaView *sci = _scintillaView;
+    // Through the line end of docLast, so an indicator left on a line end
+    // counts as a mismatch.
+    sptr_t startPos = [sci message:SCI_POSITIONFROMLINE wParam:(uptr_t)docFirst];
+    sptr_t endPos   = [sci message:SCI_POSITIONFROMLINE wParam:(uptr_t)(docLast + 1)];
+    if (endPos < 0) endPos = [sci message:SCI_GETLENGTH];
+    if (endPos <= startPos) return;
+    if (endPos - startPos > 128 * 1024) { NPP_PERF_COUNT("EditorView.linkVerify.skipped"); return; }
+
+    // Expected: the links in the text, as merged byte ranges (fills that
+    // touch or overlap become one indicator run).
+    std::vector<std::pair<sptr_t, sptr_t>> expected;
+    if (active) {
+        sptr_t len = endPos - startPos;
+        std::string buf((size_t)len + 1, '\0');
+        Sci_TextRangeFull tr;
+        tr.chrg.cpMin = (Sci_Position)startPos;
+        tr.chrg.cpMax = (Sci_Position)endPos;
+        tr.lpstrText  = buf.data();
+        [sci message:SCI_GETTEXTRANGEFULL wParam:0 lParam:(sptr_t)&tr];
+        NSString *schemes = [[NSUserDefaults standardUserDefaults]
+                             stringForKey:kPrefClickableLinkSchemes] ?: @"";
+        std::vector<std::pair<sptr_t, sptr_t>> *out = &expected;
+        NppFindClickableLinks(buf.data(), (size_t)len, schemes, ^(size_t start, size_t length) {
+            out->push_back({startPos + (sptr_t)start, startPos + (sptr_t)(start + length)});
+        }, NULL);
+        std::sort(expected.begin(), expected.end());
+        std::vector<std::pair<sptr_t, sptr_t>> merged;
+        for (const auto &r : expected) {
+            if (!merged.empty() && r.first <= merged.back().second)
+                merged.back().second = std::max(merged.back().second, r.second);
+            else
+                merged.push_back(r);
+        }
+        expected.swap(merged);
+    }
+
+    // Actual: the indicator runs inside [startPos, endPos).
+    std::vector<std::pair<sptr_t, sptr_t>> actual;
+    for (sptr_t pos = startPos; pos < endPos; ) {
+        sptr_t runEnd = [sci message:SCI_INDICATOREND wParam:kClickableLinkIndicator lParam:pos];
+        if (runEnd <= pos || runEnd > endPos) runEnd = endPos;
+        if ([sci message:SCI_INDICATORVALUEAT wParam:kClickableLinkIndicator lParam:pos])
+            actual.push_back({pos, runEnd});
+        pos = runEnd;
+    }
+
+    NPP_PERF_COUNT("EditorView.linkVerify.checked");
+    NPP_PERF_VALUE("EditorView.linkVerify.runs", (sptr_t)actual.size());
+    if (actual == expected) return;
+    NPP_PERF_COUNT("EditorView.linkVerify.mismatch");
+    static int logged = 0;
+    if (logged++ < 20) {
+        NSMutableString *e = [NSMutableString string], *a = [NSMutableString string];
+        for (const auto &r : expected) [e appendFormat:@" %ld-%ld", (long)r.first, (long)r.second];
+        for (const auto &r : actual)   [a appendFormat:@" %ld-%ld", (long)r.first, (long)r.second];
+        NSLog(@"[linkVerify] mismatch lines %ld-%ld: expected%@ actual%@",
+              (long)docFirst, (long)docLast, e, a);
     }
 }
 
