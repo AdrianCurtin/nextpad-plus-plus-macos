@@ -1677,6 +1677,33 @@ void DrawBackground(Surface *surface, const EditModel &model, const ViewStyle &v
 
 	const bool drawWhitespaceBackground = vsDraw.WhitespaceBackgroundDrawn() && !background;
 
+	// LOCAL CHANGE: coalesce the backgrounds of adjacent segments that have the
+	// same colour into one fill. A tab-separated line of numbers breaks into
+	// about 75 segments, so a full paint issued about 2,100 fills where about
+	// 60 cover the same pixels. Abutting segments share the exact edge value
+	// and FillRectangleAligned rounds each edge independently, so the union
+	// fills the same device pixels as the separate fills did.
+	PRectangle rcPending;
+	ColourRGBA backPending;
+	bool fillPending = false;
+	auto flushFill = [&]() {
+		if (fillPending) {
+			surface->FillRectangleAligned(rcPending, Fill(backPending));
+			fillPending = false;
+		}
+	};
+	auto fillSegment = [&](PRectangle rc, ColourRGBA back) {
+		if (fillPending && (back == backPending) && (rc.left == rcPending.right) &&
+			(rc.top == rcPending.top) && (rc.bottom == rcPending.bottom)) {
+			rcPending.right = rc.right;
+			return;
+		}
+		flushFill();
+		rcPending = rc;
+		backPending = back;
+		fillPending = true;
+	};
+
 	// Background drawing loop
 	while (bfBack.More()) {
 
@@ -1706,11 +1733,12 @@ void DrawBackground(Surface *surface, const EditModel &model, const ViewStyle &v
 					// Blob display
 					inIndentation = false;
 				}
-				surface->FillRectangleAligned(rcSegment, Fill(textBack));
+				fillSegment(rcSegment, textBack);	// LOCAL CHANGE: coalesced fill.
 			} else {
 				// Normal text display
-				surface->FillRectangleAligned(rcSegment, Fill(textBack));
+				fillSegment(rcSegment, textBack);	// LOCAL CHANGE: coalesced fill.
 				if (vsDraw.viewWhitespace != WhiteSpace::Invisible) {
+					flushFill();	// LOCAL CHANGE: space backgrounds draw over the segment fill.
 					for (int cpos = 0; cpos <= i - ts.start; cpos++) {
 						if (ll->chars[cpos + ts.start] == ' ') {
 							if (drawWhitespaceBackground && vsDraw.WhiteSpaceVisible(inIndentation)) {
@@ -1729,6 +1757,7 @@ void DrawBackground(Surface *surface, const EditModel &model, const ViewStyle &v
 			break;
 		}
 	}
+	flushFill();	// LOCAL CHANGE: coalesced fill.
 }
 
 void DrawEdgeLine(Surface *surface, const ViewStyle &vsDraw, const LineLayout *ll,
