@@ -228,6 +228,9 @@ static NSString *languageNameForFileName(NSString *fileName, BOOL *isUDL) {
 
 // Mirrors NPP's per-buffer ID — gives each untitled tab a unique number ("new 1", "new 2" …)
 static NSInteger _untitledCounter = 0;
+// Bumped whenever an editor clears the link indicator over its whole
+// document; invalidates every editor's link scan cache (clones share it).
+static NSUInteger nppLinkFullClearGeneration = 0;
 
 // Map a CFStringBuiltInEncoding to NSStringEncoding (short alias for CFStringConvertEncodingToNSStringEncoding)
 static inline NSStringEncoding nppEnc(CFStringEncoding cf) {
@@ -367,6 +370,22 @@ static int nppDetectEOLMode(const char *bytes, NSUInteger len) {
     BOOL _sortingRectangle;
     sptr_t _sortColumnStart, _sortColumnEnd;
 
+    // Clickable-link scan cache. Document lines [_linkScanFirst,
+    // _linkScanLast] already carry up-to-date link indicators for document
+    // _linkScanDoc (of length _linkScanLength) at text generation
+    // _linkScanGen, with link marking on or off per _linkScanActive and the
+    // custom schemes _linkScanSchemes. _linkScanFirst < 0: nothing cached.
+    sptr_t             _linkScanDoc;
+    sptr_t             _linkScanLength;
+    NSUInteger         _linkScanGen;
+    NSUInteger         _linkScanClearGen;
+    sptr_t             _linkScanFirst;
+    sptr_t             _linkScanLast;
+    BOOL               _linkScanActive;
+    NSString          *_linkScanSchemes;
+    // Bumped on every text insertion or deletion (SCN_MODIFIED).
+    NSUInteger         _textGeneration;
+
     // Hex view
 }
 
@@ -378,6 +397,7 @@ static int nppDetectEOLMode(const char *bytes, NSUInteger len) {
         _untitledIndex = ++_untitledCounter;
         _lastBracePos = INVALID_POSITION;
         _lastMatchPos = INVALID_POSITION;
+        _linkScanFirst = -1;
         _spellTag = [NSSpellChecker uniqueSpellDocumentTag];
         [self setup];
     }
@@ -2731,6 +2751,9 @@ int NppScintillaDefaultKeyCombos(int sciID, int *combos, int maxCombos) {
         ScintillaView *s = _scintillaView;
         [s message:SCI_SETINDICATORCURRENT wParam:kClickableLinkIndicator];
         [s message:SCI_INDICATORCLEARRANGE wParam:0 lParam:[s message:SCI_GETLENGTH]];
+        // The clear reaches every view of this document (a clone shares the
+        // indicators), so every view's scan cache is stale now.
+        nppLinkFullClearGeneration++;
         [self updateClickableLinks];
     }
 
@@ -4055,8 +4078,16 @@ static const int kHistoryMask = (1 << SC_MARKNUM_HISTORY_MODIFIED);
     [sci message:SCI_INDICSETOUTLINEALPHA wParam:kClickableLinkIndicator lParam:120];
 }
 
-// Re-mark clickable-link ranges within the currently visible viewport. Cheap:
-// only the on-screen byte range is scanned (mirrors Windows NPP addHotSpot).
+// Re-mark clickable-link ranges within the currently visible viewport (mirrors
+// Windows NPP addHotSpot). Runs on every SCN_UPDATEUI that scrolls or changes
+// content, often from inside Editor::Paint.
+//
+// The indicators live in the document and only depend on its text, so a line
+// scanned once stays correct until the text changes. Lines already scanned
+// are skipped: a scroll step scans only the newly exposed lines, and a
+// horizontal scroll or a repeated update scans nothing. Any text change, a
+// different document, a full indicator clear or a link pref change starts
+// over with the whole visible range, as before.
 - (void)updateClickableLinks {
     ScintillaView *sci = _scintillaView;
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
@@ -4074,9 +4105,72 @@ static const int kHistoryMask = (1 << SC_MARKNUM_HISTORY_MODIFIED);
     if (docLast >= lineCount) docLast = lineCount - 1;
     if (docLast < docFirst) return;
 
-    sptr_t startPos = [sci message:SCI_POSITIONFROMLINE   wParam:(uptr_t)docFirst];
-    sptr_t endPos   = [sci message:SCI_GETLINEENDPOSITION wParam:(uptr_t)docLast];
-    if (endPos <= startPos) return;
+    const sptr_t doc    = [sci message:SCI_GETDOCPOINTER];
+    const sptr_t length = [sci message:SCI_GETLENGTH];
+    const BOOL active = [ud boolForKey:kPrefClickableLinkEnable] &&
+                        !(_largeFileMode && ![ud boolForKey:kPrefLargeFileAllowURLClick]);
+    NSString *schemes = [ud stringForKey:kPrefClickableLinkSchemes] ?: @"";
+    const BOOL cacheValid = _linkScanFirst >= 0 &&
+        _linkScanDoc == doc && _linkScanLength == length &&
+        _linkScanGen == _textGeneration &&
+        _linkScanClearGen == nppLinkFullClearGeneration &&
+        _linkScanActive == active &&
+        (!active || [_linkScanSchemes isEqualToString:schemes]);
+
+    sptr_t ranges[2][2];
+    int rangeCount = 0;
+    if (cacheValid && docLast >= _linkScanFirst - 1 && docFirst <= _linkScanLast + 1) {
+        // Overlaps or touches the scanned lines: scan only what lies outside.
+        if (docFirst < _linkScanFirst) {
+            ranges[rangeCount][0] = docFirst;
+            ranges[rangeCount][1] = _linkScanFirst - 1;
+            rangeCount++;
+        }
+        if (docLast > _linkScanLast) {
+            ranges[rangeCount][0] = _linkScanLast + 1;
+            ranges[rangeCount][1] = docLast;
+            rangeCount++;
+        }
+        if (rangeCount == 0) return;
+        _linkScanFirst = MIN(_linkScanFirst, docFirst);
+        _linkScanLast  = MAX(_linkScanLast, docLast);
+    } else {
+        ranges[0][0] = docFirst;
+        ranges[0][1] = docLast;
+        rangeCount = 1;
+        _linkScanFirst = docFirst;
+        _linkScanLast  = docLast;
+    }
+    _linkScanDoc      = doc;
+    _linkScanLength   = length;
+    _linkScanGen      = _textGeneration;
+    _linkScanClearGen = nppLinkFullClearGeneration;
+    _linkScanActive   = active;
+    _linkScanSchemes  = [schemes copy];
+
+    for (int i = 0; i < rangeCount; i++) {
+        // A scan cut short by the byte budget leaves lines unmarked: forget
+        // the cache so the next update scans the whole visible range again.
+        if (![self _markClickableLinksFromLine:ranges[i][0] toLine:ranges[i][1] active:active])
+            _linkScanFirst = -1;
+    }
+}
+
+// Clears and re-marks the link indicator on document lines first..last,
+// including the line end of the last one: a link indicator can reach a line
+// end (a newline typed inside a link takes the link's indicator), and a scan
+// that stopped at the last line's text would leave it there when the next
+// scroll step scans only the lines below. Returns NO when the scan was cut
+// short by the byte budget.
+- (BOOL)_markClickableLinksFromLine:(sptr_t)docFirst toLine:(sptr_t)docLast active:(BOOL)active {
+    ScintillaView *sci = _scintillaView;
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    BOOL complete = YES;
+
+    sptr_t startPos = [sci message:SCI_POSITIONFROMLINE wParam:(uptr_t)docFirst];
+    sptr_t endPos   = [sci message:SCI_POSITIONFROMLINE wParam:(uptr_t)(docLast + 1)];
+    if (endPos < 0) endPos = [sci message:SCI_GETLENGTH];
+    if (endPos <= startPos) return YES;
 
     // Bound the scan on pathologically long lines (minified bundles,
     // single-line JSON/CSV, long log rows): the visible range is bounded by
@@ -4087,27 +4181,23 @@ static const int kHistoryMask = (1 << SC_MARKNUM_HISTORY_MODIFIED);
     // cleanly. Links past the cap on such a line simply aren't marked.
     static const sptr_t kMaxScanBytes = 128 * 1024;
     if (endPos - startPos > kMaxScanBytes) {
+        complete = NO;
         endPos = startPos + kMaxScanBytes;
         while (endPos > startPos &&
                ((unsigned char)[sci message:SCI_GETCHARAT wParam:(uptr_t)endPos] & 0xC0) == 0x80)
             endPos--;
-        if (endPos <= startPos) return;
+        if (endPos <= startPos) return NO;
     }
 
-    // Clear the indicator across the visible range first.
+    // Clear the indicator across the range first.
     [sci message:SCI_SETINDICATORCURRENT wParam:kClickableLinkIndicator];
     [sci message:SCI_INDICATORCLEARRANGE wParam:(uptr_t)startPos lParam:(sptr_t)(endPos - startPos)];
 
-    if (![ud boolForKey:kPrefClickableLinkEnable]) return;
-    if (_largeFileMode && ![ud boolForKey:kPrefLargeFileAllowURLClick]) return;
+    if (!active) return complete;
 
-    // Extract the visible text and mark the links in it. Detection runs line
-    // by line (see NppClickableLinks.h): NSDataDetector can stop reporting
-    // links for the rest of a string after some text, so one pass over the
-    // whole screen could leave every later line unmarked.
     sptr_t len = endPos - startPos;
     char *buf = (char *)malloc((size_t)len + 1);
-    if (!buf) return;
+    if (!buf) return NO;
     Sci_TextRangeFull tr;
     tr.chrg.cpMin = (Sci_Position)startPos;
     tr.chrg.cpMax = (Sci_Position)endPos;
@@ -4119,6 +4209,7 @@ static const int kHistoryMask = (1 << SC_MARKNUM_HISTORY_MODIFIED);
                 wParam:(uptr_t)(startPos + (sptr_t)start) lParam:(sptr_t)length];
     }, NULL);
     free(buf);
+    return complete;
 }
 
 // Opens the clicked link if the double-click landed on a clickable-link
@@ -4791,6 +4882,7 @@ static NSSet<NSString *> *_cLikeLanguages() {
     switch (notification->nmhdr.code) {
         case SCN_MODIFIED:
             if (notification->modificationType & (SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT)) {
+                _textGeneration++;
                 _isModified = YES;
                 // Sync clone sibling's modified state (shared document).
                 if (_cloneSibling) _cloneSibling->_isModified = YES;
