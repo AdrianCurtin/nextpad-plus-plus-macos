@@ -2061,7 +2061,26 @@ void ScintillaCocoa::Resize() {
  */
 void ScintillaCocoa::UpdateForScroll() {
 	Point ptOrigin = GetVisibleOriginInMain();
-	xOffset = static_cast<int>(ptOrigin.x);
+	const int xOffsetNew = static_cast<int>(ptOrigin.x);
+	// LOCAL CHANGE: repaint the whole text area when the user scrolls
+	// horizontally. On macOS 26 and later AppKit keeps the document view's
+	// drawing as a display list in a content layer the size of the visible
+	// rect. A scroll moves that layer, and Core Animation rebuilds its contents
+	// from every display-list entry still on screen, on the main thread, twice
+	// per scroll step. Painting only the exposed strip appends one strip of
+	// entries per step without replacing the older ones, so after one screen
+	// width of scrolling the list holds about a hundred strips and the rebuild
+	// takes most of the frame (hscroll benchmark: about 14 ms of main thread per
+	// 12 px step, more than half of the frames dropped at 120 Hz). A full repaint
+	// replaces the list with one paint of the visible lines, which costs under
+	// 1 ms with the line layouts already cached. Scintilla's own horizontal scrolls
+	// (HorizontalScrollTo) already call Redraw and set xOffset before this runs.
+	if (xOffsetNew != xOffset) {
+		if (@available(macOS 26.0, *)) {
+			wMain.InvalidateAll();
+		}
+	}
+	xOffset = xOffsetNew;
 	Sci::Line newTop = std::min(static_cast<Sci::Line>(ptOrigin.y / vs.lineHeight), MaxScrollPos());
 	SetTopLine(newTop);
 }
