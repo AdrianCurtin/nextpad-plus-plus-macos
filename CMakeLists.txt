@@ -534,6 +534,11 @@ set_source_files_properties(${APP_SRCS} PROPERTIES
 #                         tree (UTF-8, UTF-8 BOM, UTF-16LE/BE, Windows-1252,
 #                         Shift-JIS, binary skip, multi-hit lines, cancel,
 #                         round-trip safety)
+#   platcocoa_text        tests/test_platcocoa_text.mm: text measuring and drawing of
+#                         the Cocoa layer (scintilla/cocoa/PlatCocoa.mm) against
+#                         CoreText line layout: positions, widths and pixels must be
+#                         identical, for fonts on the ASCII fast path and off it.
+#                         Links AppKit but draws only into memory
 #   regex_run_sh,         the standalone harness scripts (regex/test/run.sh and
 #   regex_run_boost_sh    run_boost.sh), which build their own copy with clang++;
 #                         label "standalone" (ctest -LE standalone skips them)
@@ -575,13 +580,20 @@ if(NPP_BUILD_TESTS)
     # Foundation only: linking fails if the code under test needs AppKit.
     target_link_libraries(test_search_core PRIVATE "-framework Foundation")
 
+    add_executable(test_platcocoa_text EXCLUDE_FROM_ALL "${NPP_TEST_ROOT}/test_platcocoa_text.mm")
+    target_link_libraries(test_platcocoa_text PRIVATE scintilla
+        "-framework Cocoa" "-framework QuartzCore" "-framework CoreText" "-framework Carbon")
+    target_compile_definitions(test_platcocoa_text PRIVATE ${SCI_DEFINITIONS})
+    target_compile_options(test_platcocoa_text PRIVATE -fobjc-arc)
+
     add_custom_target(npp_tests
-        DEPENDS test_npp_regex test_boost_regex test_buffer_search test_search_core)
+        DEPENDS test_npp_regex test_boost_regex test_buffer_search test_search_core test_platcocoa_text)
 
     add_test(NAME regex_editor_engine COMMAND test_npp_regex)
     add_test(NAME regex_boost_backend COMMAND test_boost_regex)
     add_test(NAME buffer_search COMMAND test_buffer_search)
     add_test(NAME search_core COMMAND test_search_core)
+    add_test(NAME platcocoa_text COMMAND test_platcocoa_text)
     add_test(NAME regex_run_sh COMMAND bash "${NPP_REGEX_ROOT}/test/run.sh")
     add_test(NAME regex_run_boost_sh COMMAND bash "${NPP_REGEX_ROOT}/test/run_boost.sh")
     set_tests_properties(regex_run_sh regex_run_boost_sh PROPERTIES LABELS standalone TIMEOUT 600)
