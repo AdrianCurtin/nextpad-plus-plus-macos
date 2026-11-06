@@ -14,7 +14,8 @@ sci="$root/scintilla"
 out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
 
-# Scintilla core sources required to instantiate and edit a Document.
+# Scintilla core sources required to instantiate and edit a Document, plus the
+# performance probe aggregator they report to (inert in the tests).
 core=(Document CellBuffer CharClassify CharacterCategoryMap CharacterType \
       Decoration PerLine RunStyles UniConversion UniqueString CaseFolder \
       CaseConvert DBCS RESearch ChangeHistory UndoHistory Geometry)
@@ -25,10 +26,10 @@ for s in "${core[@]}"; do srcs+=("$sci/src/$s.cxx"); done
 # every editor Document uses.
 clang++ -std=c++17 -stdlib=libc++ \
     -DSCI_NAMESPACE -DSCI_OWNREGEX -DSCINTILLA_QT=0 -DBOOST_REGEX_STANDALONE -DBOOST_HAS_THREADS= \
-    -I"$sci/include" -I"$sci/src" -I"$root/regex" \
+    -I"$sci/include" -I"$sci/src" -I"$root/regex" -I"$root/src/perf" \
     "$here/test_npp_regex.cxx" \
     "$root/regex/BoostRegExSearch.cxx" "$root/regex/UTF8DocumentIterator.cxx" \
-    "${srcs[@]}" \
+    "${srcs[@]}" "$root/src/perf/NppPerfProbe.cxx" \
     -o "$out/test_npp_regex"
 
 "$out/test_npp_regex"
