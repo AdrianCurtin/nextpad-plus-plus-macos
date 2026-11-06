@@ -5,6 +5,7 @@
 #import "NppThemeManager.h"
 #import "StyleConfiguratorWindowController.h"
 #import "TabManager.h"
+#import "NppPerfDiagnostics.h"
 
 // The map shares the tracked editor's Scintilla document (SCI_SETDOCPOINTER),
 // so it must never take keyboard focus: SCI_SETREADONLY is a document
@@ -220,6 +221,7 @@
 // This only re-attaches when the editor swapped documents (file load/reload
 // creates a fresh document) and refreshes the per-view style colours.
 - (void)_updateMapContent {
+    NPP_PERF_SCOPE("DocumentMap.updateContent");
     [self _syncDocument];
     [self _applyThemeFromEditor:_trackedEditor];
     [self _syncScroll];
@@ -255,6 +257,7 @@ static sptr_t _dmBGRFromColor(NSColor *c) {
 }
 
 - (void)_applyThemeFromEditor:(nullable EditorView *)ed {
+    NPP_PERF_SCOPE("DocumentMap.applyTheme");
     ScintillaView *src = ed.scintillaView;
     if (!src) {
         // No editor to mirror: paint the empty map with the theme instead of
@@ -305,6 +308,7 @@ static sptr_t _dmBGRFromColor(NSColor *c) {
 // This lets the viewport rect reach the very top and bottom of the panel.
 
 - (void)_syncScroll {
+    NPP_PERF_SCOPE("DocumentMap.syncScroll");
     EditorView *ed = _trackedEditor;
     if (!ed) return;
 
@@ -451,6 +455,7 @@ static sptr_t _dmBGRFromColor(NSColor *c) {
 
 - (void)_cursorMoved:(NSNotification *)note {
     if (note.object != _trackedEditor) return;
+    NPP_PERF_SCOPE("DocumentMap.cursorMoved");
     [self _syncDocument];
     [self _syncScroll];
     [self _scheduleContentUpdate];

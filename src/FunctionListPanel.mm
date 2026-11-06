@@ -6,6 +6,7 @@
 #import "Scintilla.h"
 #import "ScintillaMessages.h"
 #import "NppThemeManager.h"
+#import "NppPerfDiagnostics.h"
 
 // ── Data model: tree item (node = class/struct, leaf = function/method) ──────
 
@@ -420,6 +421,9 @@ static NSButton *_flPanelBtn(NSString *iconName, NSString *tip,
 #pragma mark - Public API
 
 - (void)loadEditor:(EditorView *)editor {
+    // Main-thread part: full text copy and line table. The scan runs on a
+    // background queue ("FunctionList.scan"), the UI rebuild back on main.
+    NPP_PERF_SCOPE("FunctionList.loadEditor");
     _editor = editor;
     [_rootItems removeAllObjects];
     [_filteredItems removeAllObjects];
@@ -451,13 +455,17 @@ static NSButton *_flPanelBtn(NSString *iconName, NSString *tip,
         // Check if this scan is still current
         if (gen != self->_scanGeneration) return;
 
-        [self _scanText:text forLanguage:lang];
+        {
+            NPP_PERF_SCOPE("FunctionList.scan", "chars=%lu", (unsigned long)text.length);
+            [self _scanText:text forLanguage:lang];
+        }
 
         if (gen != self->_scanGeneration) return;
 
         // Update UI on main thread
         dispatch_async(dispatch_get_main_queue(), ^{
             if (gen != self->_scanGeneration) return;
+            NPP_PERF_SCOPE("FunctionList.applyResults");
             [self _rebuildFilteredItems];
             [self->_outlineView reloadData];
             [self _expandAllNodes];

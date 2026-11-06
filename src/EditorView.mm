@@ -9,6 +9,8 @@
 #import "NppPluginManager.h"
 #import "PreferencesWindowController.h"
 #import "SearchEngine.h"   // #166 Phase 1: replay Windows Find/Replace (type-3) macros
+#import "NppPerfDiagnostics.h"
+#import "NppPerfBench.h"
 
 // NPPN_* constants (from NppPluginInterfaceMac.h — not included directly
 // to avoid SendMessage macro conflicts in host code)
@@ -479,13 +481,20 @@ static int nppDetectEOLMode(const char *bytes, NSUInteger len) {
 #pragma mark - File I/O
 
 - (BOOL)loadFileAtPath:(NSString *)path error:(NSError **)error {
+    // Performance diagnostics: whole load plus one lap per phase ("Load.*").
+    NppPerfMark(@"load.begin");
+    NPP_PERF_SCOPE("Load.loadFileAtPath", "%{public}s", path.lastPathComponent.UTF8String);
+    NppPerfLap perfLap;
     // ── Stat once — used for large-file guard AND mtime recording ─────────────
     NSDictionary *attrs = [[NSFileManager defaultManager]
                            attributesOfItemAtPath:path error:nil];
     NSUInteger fileSize = 0;
     if (attrs) fileSize = (NSUInteger)[attrs[NSFileSize] unsignedLongLongValue];
+    NPP_PERF_VALUE("Load.fileSizeBytes", fileSize);
 
     BOOL large = (fileSize > NppLargeFileThreshold());
+    NPP_PERF_COUNT_N("Load.largeFileMode", large ? 1 : 0);
+    perfLap.Lap("Load.stat");
     if (large) {
         // The 2 GB suppress-warning toggle silences the dialog ONLY for files
         // ≥2 GB — smaller large files still prompt the user, since the prompt
@@ -493,7 +502,8 @@ static int nppDetectEOLMode(const char *bytes, NSUInteger len) {
         // "this might hang the app." Matches Windows NPP behavior.
         BOOL suppress2GB = [[NSUserDefaults standardUserDefaults] boolForKey:kPrefLargeFileSuppress2GBWarning]
                            && fileSize >= (2ULL * 1024 * 1024 * 1024);
-        if (!suppress2GB) {
+        // The performance benchmark runs unattended: accept the warning.
+        if (!suppress2GB && !NppPerfBenchActive()) {
             NSString *sizeMB = [NSString stringWithFormat:@"%.0f MB",
                                 fileSize / (1024.0 * 1024.0)];
             NSAlert *alert = [[NSAlert alloc] init];
@@ -516,10 +526,12 @@ static int nppDetectEOLMode(const char *bytes, NSUInteger len) {
 
     // Use memory-mapped I/O for large files — OS pages in only what's needed.
     NSDataReadingOptions readOpts = large ? NSDataReadingMappedIfSafe : 0;
+    perfLap.Lap("Load.prompt");
     NSData *rawData = [NSData dataWithContentsOfFile:path
                                              options:readOpts
                                                error:error];
     if (!rawData) return NO;
+    perfLap.Lap(large ? "Load.read.mapped" : "Load.read");
 
     NSStringEncoding enc = NSUTF8StringEncoding;
     BOOL hasBOM = NO;
@@ -637,6 +649,7 @@ static int nppDetectEOLMode(const char *bytes, NSUInteger len) {
         enc = NSISOLatin1StringEncoding;
         utf8Data = rawData;
     }
+    perfLap.Lap("Load.decode");
 
     // Phase 2 #1+#2: every load swaps to a fresh Scintilla document so the
     // options match the file state. Large files get TEXT_LARGE (64-bit
@@ -655,6 +668,7 @@ static int nppDetectEOLMode(const char *bytes, NSUInteger len) {
         [_scintillaView message:SCI_SETDOCPOINTER wParam:0 lParam:newDoc];
         [_scintillaView message:SCI_RELEASEDOCUMENT wParam:0 lParam:newDoc];
     }
+    perfLap.Lap("Load.createDocument");
 
     // ── Pre-insert undo gate for large files (Phase 2.6) ─────────────────────
     // Disabling SCI_SETUNDOCOLLECTION BEFORE SCI_ADDTEXT prevents Scintilla's
@@ -671,13 +685,18 @@ static int nppDetectEOLMode(const char *bytes, NSUInteger len) {
 
     // Load into Scintilla using SCI_ADDTEXT with explicit length — binary safe.
     [_scintillaView message:SCI_CLEARALL wParam:0 lParam:0];
-    [_scintillaView message:SCI_ADDTEXT
-                     wParam:(uptr_t)utf8Data.length
-                     lParam:(sptr_t)utf8Data.bytes];
+    {
+        NPP_PERF_SCOPE("Load.addText", "bytes=%lu", (unsigned long)utf8Data.length);
+        [_scintillaView message:SCI_ADDTEXT
+                         wParam:(uptr_t)utf8Data.length
+                         lParam:(sptr_t)utf8Data.bytes];
+    }
+    perfLap.Lap("Load.addTextPhase");
     // The fresh document above defaults to LF; match the file instead so the
     // status bar is right and Enter inserts the file's own line ending.
     [_scintillaView message:SCI_SETEOLMODE
                      wParam:nppDetectEOLMode((const char *)utf8Data.bytes, utf8Data.length)];
+    perfLap.Lap("Load.eolDetect");
     _filePath = [path copy];
     _fileEncoding = enc;
     _hasBOM = hasBOM;
@@ -710,6 +729,7 @@ static int nppDetectEOLMode(const char *bytes, NSUInteger len) {
         // Re-enable undo in case this tab was previously in large-file mode.
         [_scintillaView message:SCI_SETUNDOCOLLECTION wParam:1 lParam:0];
     }
+    perfLap.Lap("Load.setLanguage");
 
     [_scintillaView message:SCI_GOTOPOS wParam:0];
     [_scintillaView message:SCI_EMPTYUNDOBUFFER];
@@ -756,6 +776,10 @@ static int nppDetectEOLMode(const char *bytes, NSUInteger len) {
         [_scintillaView message:SCI_SETMARGINRIGHT wParam:0 lParam:curRight];
     });
 
+    perfLap.Lap("Load.finish");
+    NPP_PERF_VALUE("Load.lines", [_scintillaView message:SCI_GETLINECOUNT]);
+    if (NppPerfEnabled()) NppPerfSetLoadedContentView((__bridge void *)_scintillaView.content);
+    NppPerfMark(@"load.end");
     return YES;
 }
 
@@ -1079,6 +1103,7 @@ static int nppDetectEOLMode(const char *bytes, NSUInteger len) {
 /// Because we update _lastKnownModDate immediately after every load and save,
 /// our own writes never appear as "external" changes — no FSEvents timing issues.
 - (void)_pollExternalChange:(NSTimer *)timer {
+    NPP_PERF_SCOPE("EditorView.pollExternalChange");
     if (!_filePath || _externalChangePending) return;
 
     NSDate *mtime = [[NSFileManager defaultManager]
@@ -1217,6 +1242,7 @@ static int nppDetectEOLMode(const char *bytes, NSUInteger len) {
 }
 
 - (void)setLanguage:(NSString *)languageName preferUDL:(BOOL)preferUDL {
+    NPP_PERF_SCOPE("EditorView.setLanguage", "%{public}s", languageName.UTF8String ?: "");
     _currentLanguage = [languageName copy];
     _currentLanguageIsUDL = NO;
 
@@ -1565,6 +1591,7 @@ static NSString *nppEditorFontName(NSString *name) {
 }
 
 - (void)applyThemeColors {
+    NPP_PERF_SCOPE("EditorView.applyThemeColors");
     NPPStyleStore *store = [NPPStyleStore sharedStore];
     NSString *fontName = store.globalFontName;
     NSInteger fontSize = store.globalFontSize;
@@ -2514,6 +2541,7 @@ int NppScintillaDefaultKeyCombos(int sciID, int *combos, int maxCombos) {
 /// short-circuits on unchanged width, so the helper is cheap to call on
 /// every zoom step even for very large files.
 - (void)recomputeLineNumberMargin {
+    NPP_PERF_SCOPE("EditorView.recomputeLineNumberMargin");
     ScintillaView *sci = _scintillaView;
     if (!sci) return;
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
@@ -3828,6 +3856,7 @@ static const int kHistoryMask = (1 << SC_MARKNUM_HISTORY_MODIFIED);
 // Fold block highlighting (red ⊞/⊟ symbols and connecting lines for the enclosing block)
 // is handled automatically by SCI_MARKERENABLEHIGHLIGHT — no manual marker work needed.
 - (void)updateBraceHighlight {
+    NPP_PERF_SCOPE("EditorView.updateBraceHighlight");
     // Performance pref — skip brace match for large files unless explicitly allowed.
     if (_largeFileMode &&
         ![[NSUserDefaults standardUserDefaults] boolForKey:kPrefLargeFileAllowBraceMatch]) return;
@@ -3873,11 +3902,16 @@ static const int kHistoryMask = (1 << SC_MARKNUM_HISTORY_MODIFIED);
 #pragma mark - Smart Highlight
 
 - (void)updateSmartHighlight {
+    NPP_PERF_SCOPE("EditorView.updateSmartHighlight");
     ScintillaView *sci = _scintillaView;
 
     // Always clear first
     [sci message:SCI_SETINDICATORCURRENT wParam:kHighlightIndicator];
-    [sci message:SCI_INDICATORCLEARRANGE wParam:0 lParam:[sci message:SCI_GETLENGTH]];
+    {
+        // Whole-document indicator clear on every SCN_UPDATEUI.
+        NPP_PERF_SCOPE("EditorView.updateSmartHighlight.clearAll");
+        [sci message:SCI_INDICATORCLEARRANGE wParam:0 lParam:[sci message:SCI_GETLENGTH]];
+    }
 
     // Bail if smart highlighting is disabled
     if (![[NSUserDefaults standardUserDefaults] boolForKey:kPrefSmartHighlight]) return;
@@ -3958,6 +3992,7 @@ static const int kHistoryMask = (1 << SC_MARKNUM_HISTORY_MODIFIED);
 // different document, a full indicator clear or a link pref change starts
 // over with the whole visible range, as before.
 - (void)updateClickableLinks {
+    NPP_PERF_SCOPE("EditorView.updateClickableLinks");
     ScintillaView *sci = _scintillaView;
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
 
@@ -4000,7 +4035,10 @@ static const int kHistoryMask = (1 << SC_MARKNUM_HISTORY_MODIFIED);
             ranges[rangeCount][1] = docLast;
             rangeCount++;
         }
-        if (rangeCount == 0) return;
+        if (rangeCount == 0) {
+            NPP_PERF_COUNT("EditorView.updateClickableLinks.cached");
+            return;
+        }
         _linkScanFirst = MIN(_linkScanFirst, docFirst);
         _linkScanLast  = MAX(_linkScanLast, docLast);
     } else {
@@ -4018,6 +4056,7 @@ static const int kHistoryMask = (1 << SC_MARKNUM_HISTORY_MODIFIED);
     _linkScanSchemes  = [schemes copy];
 
     for (int i = 0; i < rangeCount; i++) {
+        NPP_PERF_VALUE("EditorView.updateClickableLinks.lines", ranges[i][1] - ranges[i][0] + 1);
         // A scan cut short by the byte budget leaves lines unmarked: forget
         // the cache so the next update scans the whole visible range again.
         if (![self _markClickableLinksFromLine:ranges[i][0] toLine:ranges[i][1] active:active])
@@ -4032,6 +4071,7 @@ static const int kHistoryMask = (1 << SC_MARKNUM_HISTORY_MODIFIED);
 // scroll step scans only the lines below. Returns NO when the scan was cut
 // short by the byte budget.
 - (BOOL)_markClickableLinksFromLine:(sptr_t)docFirst toLine:(sptr_t)docLast active:(BOOL)active {
+    NPP_PERF_SCOPE("EditorView.markClickableLinks");
     ScintillaView *sci = _scintillaView;
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     BOOL complete = YES;
@@ -4065,6 +4105,7 @@ static const int kHistoryMask = (1 << SC_MARKNUM_HISTORY_MODIFIED);
     if (!active) return complete;
 
     sptr_t len = endPos - startPos;
+    NPP_PERF_VALUE("EditorView.markClickableLinks.bytes", len);
     char *buf = (char *)malloc((size_t)len + 1);
     if (!buf) return NO;
     Sci_TextRangeFull tr;
@@ -4073,11 +4114,16 @@ static const int kHistoryMask = (1 << SC_MARKNUM_HISTORY_MODIFIED);
     tr.lpstrText  = buf;
     [sci message:SCI_GETTEXTRANGEFULL wParam:0 lParam:(sptr_t)&tr];
     NSString *schemes = [ud stringForKey:kPrefClickableLinkSchemes] ?: @"";
+    NppLinkScanStats stats = {0, 0, 0, 0};
     NppFindClickableLinks(buf, (size_t)len, schemes, ^(size_t start, size_t length) {
         [sci message:SCI_INDICATORFILLRANGE
                 wParam:(uptr_t)(startPos + (sptr_t)start) lParam:(sptr_t)length];
-    }, NULL);
+    }, &stats);
     free(buf);
+    // Numeric data (sensor exports, CSV/TSV columns) holds no links; its lines
+    // skip NSDataDetector, which cost about 2.7 ms per screenful.
+    NPP_PERF_COUNT_N("EditorView.markClickableLinks.numericSkip", (long long)stats.numericLines);
+    NPP_PERF_COUNT_N("EditorView.markClickableLinks.detectLines", (long long)stats.detectedLines);
     return complete;
 }
 
@@ -4737,6 +4783,8 @@ static NSSet<NSString *> *_cLikeLanguages() {
 #pragma mark - ScintillaNotificationProtocol
 
 - (void)notification:(SCNotification *)notification {
+    // Performance diagnostics: time per SCN code ("EditorView.SCN.<Code>").
+    NppPerfSCNScope perfSCN(notification->nmhdr.code, notification->updated, notification->modificationType);
     // Forward safe Scintilla notifications to plugins BEFORE host processing
     // (matches Windows NPP where plugins see notifications first).
     //
@@ -4778,6 +4826,7 @@ static NSSet<NSString *> *_cLikeLanguages() {
             code == SCN_UPDATEUI || code == SCN_PAINTED ||
             code == SCN_DWELLSTART || code == SCN_DWELLEND) {
             if (!isMacroActive) {
+                NPP_PERF_SCOPE("EditorView.forwardToPlugins", "code=%u", code);
                 [[NppPluginManager shared] forwardScintillaNotification:notification];
             } else if (_isRecordingMacro) {
                 // During recording only: still forward but with Scintilla's
@@ -4847,7 +4896,11 @@ static NSSet<NSString *> *_cLikeLanguages() {
                 [_macroActions addObject:action];
             }
             break;
-        case SCN_UPDATEUI:
+        case SCN_UPDATEUI: {
+            NPP_PERF_COUNT_N("EditorView.SCN.UpdateUI.vscroll", (notification->updated & SC_UPDATE_V_SCROLL) ? 1 : 0);
+            NPP_PERF_COUNT_N("EditorView.SCN.UpdateUI.hscroll", (notification->updated & SC_UPDATE_H_SCROLL) ? 1 : 0);
+            NPP_PERF_COUNT_N("EditorView.SCN.UpdateUI.selection", (notification->updated & SC_UPDATE_SELECTION) ? 1 : 0);
+            NPP_PERF_COUNT_N("EditorView.SCN.UpdateUI.content", (notification->updated & SC_UPDATE_CONTENT) ? 1 : 0);
             [self updateBraceHighlight];
             [self updateSmartHighlight];
             // Re-mark links only when content or the viewport changed — a
@@ -4855,10 +4908,14 @@ static NSSet<NSString *> *_cLikeLanguages() {
             if (notification->updated & (SC_UPDATE_CONTENT | SC_UPDATE_V_SCROLL | SC_UPDATE_H_SCROLL))
                 [self updateClickableLinks];
             if (_spellCheckEnabled) [self _scheduleSpellCheck];
+            // Observers: status bar and tab refresh (MainWindowController),
+            // Document Map scroll sync.
+            NPP_PERF_SCOPE("EditorView.postCursorDidMove");
             [[NSNotificationCenter defaultCenter]
                 postNotificationName:EditorViewCursorDidMoveNotification
                               object:self];
             break;
+        }
         case SCN_FOCUSIN:
             [[NSNotificationCenter defaultCenter]
                 postNotificationName:EditorViewDidGainFocusNotification
@@ -6858,6 +6915,7 @@ static const unsigned int kSCI_GetBidirectional = 2708;
 
 - (void)runSpellCheck {
     if (!_spellCheckEnabled) return;
+    NPP_PERF_SCOPE("EditorView.runSpellCheck");
     ScintillaView *sci = _scintillaView;
     intptr_t docLen = [sci message:SCI_GETLENGTH];
     char *buf = (char *)calloc((size_t)docLen + 1, 1);
@@ -6929,6 +6987,7 @@ static const unsigned int kSCI_GetBidirectional = 2708;
 }
 
 - (void)applyGitDiffHighlights {
+    NPP_PERF_SCOPE("EditorView.applyGitDiffHighlights");
     [self clearGitDiffHighlights];
     if (!_filePath) return;
     NSString *fp = [_filePath copy];
@@ -6979,6 +7038,7 @@ static const unsigned int kSCI_GetBidirectional = 2708;
 }
 
 - (void)updateGitDiffMarkers {
+    NPP_PERF_SCOPE("EditorView.updateGitDiffMarkers");
     if (!_filePath) { [self clearGitDiffMarkers]; return; }
     NSString *fp = [_filePath copy];
     __weak typeof(self) weakSelf = self;

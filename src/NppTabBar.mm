@@ -2,6 +2,7 @@
 #import "NppPaths.h"
 #import "NppThemeManager.h"
 #import "PreferencesWindowController.h"
+#import "NppPerfDiagnostics.h"
 #import "NppLocalizer.h"   // match tab-menu items by normalized English title (locale-proof)
 
 @class _NppTabItem;
@@ -640,6 +641,7 @@ static CGFloat tabShrinkFloor(_NppTabItem *item) {
 - (void)buildScrollView { /* init already called _buildUI */ }
 
 - (void)drawRect:(NSRect)dirtyRect {
+    NPP_PERF_SCOPE("NppTabBar.drawRect");
     if (TM.usesGlassMaterials) {
         // Tahoe: transparent tab strip with no bottom separator — the window
         // gradient shows behind the tabs. Gated; Classic keeps its #eeeeee fill.
@@ -700,11 +702,13 @@ static CGFloat tabShrinkFloor(_NppTabItem *item) {
 
 - (void)setTitle:(NSString *)title modified:(BOOL)modified atIndex:(NSInteger)index {
     if (index < 0 || index >= (NSInteger)_items.count) return;
+    NPP_PERF_SCOPE("NppTabBar.setTitle");
     // Called for every SCN_UPDATEUI (each scroll frame) through
     // -[MainWindowController refreshTabsForEditor:]; repaint only on a change.
     _NppTabItem *item = _items[index];
     if (item.isModified == modified &&
         (item.title == title || [item.title isEqualToString:title])) {
+        NPP_PERF_COUNT("NppTabBar.setTitle.unchanged");
         return;
     }
     _items[index].title      = title;
