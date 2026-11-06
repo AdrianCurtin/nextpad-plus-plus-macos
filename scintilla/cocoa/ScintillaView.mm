@@ -1715,6 +1715,12 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 		//[scrollView setScrollerStyle:NSScrollerStyleLegacy];
 		//[scrollView setScrollerKnobStyle:NSScrollerKnobStyleDark];
 		//[scrollView setHorizontalScrollElasticity:NSScrollElasticityNone];
+		// LOCAL CHANGE: no horizontal rubber band. A horizontal flick that
+		// bounced off the left edge left the view stretched past it, and while
+		// stretched on that axis NSScrollView dropped the momentum of every
+		// vertical flick, so vertical trackpad scrolling stopped coasting until
+		// the stretch cleared. Windows Notepad++ has no rubber band either.
+		scrollView.horizontalScrollElasticity = NSScrollElasticityNone;
 		[self addSubview: scrollView];
 
 		marginView = [[SCIMarginView alloc] initWithScrollView: scrollView];
