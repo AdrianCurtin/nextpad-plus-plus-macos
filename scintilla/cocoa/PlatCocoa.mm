@@ -27,6 +27,7 @@
 #include <functional>
 #include <memory>
 #include <numeric>
+#include <mutex>	// LOCAL CHANGE: ASCII fast path font table cache.
 
 #import <Foundation/NSGeometry.h>
 
@@ -153,6 +154,304 @@ CGColorRef GenericColour(ColourRGBA colour) {
 
 }
 
+//----------------- ASCII fast path ----------------------------------------------------------------
+
+// LOCAL CHANGE: draw and measure runs of printable ASCII without CoreText line layout.
+// Each text run used to cost a CFString, a CFAttributedString and a CTLine, for
+// drawing and again for measuring. When CoreText lays out printable ASCII in a
+// font as one glyph per character at the glyph's nominal advance, the glyphs and
+// positions follow from a per-font table, so runs made only of such characters
+// are drawn with CTFontDrawGlyphs and measured by summing advances. Whether a font
+// qualifies is checked once, against CoreText's own layout, by
+// BuildASCIIMetrics; fonts that do not qualify, and any run with another byte,
+// keep the CTLine path.
+
+namespace {
+
+constexpr bool IsPrintableASCII(unsigned char ch) noexcept {
+	return ch >= QuartzASCIIMetrics::first && ch <= QuartzASCIIMetrics::last;
+}
+
+// Lays out chars with CoreText and checks that the result is one run in the
+// requested font holding one glyph per character, in order, with the table's
+// glyph and advance and the running sum of advances as its position. Also checks
+// the line width and, when checkOffsets is set, the caret offsets that the
+// single-byte and DBCS paths of SurfaceImpl::MeasureWidths read.
+bool LayoutMatchesTable(CTFontRef font, CFDictionaryRef attributes, const std::vector<UniChar> &chars,
+			const QuartzASCIIMetrics &metrics, bool checkOffsets) {
+	CFStringRef str = CFStringCreateWithCharacters(kCFAllocatorDefault, chars.data(), chars.size());
+	if (!str) {
+		return false;
+	}
+	CFAttributedStringRef as = CFAttributedStringCreate(kCFAllocatorDefault, str, attributes);
+	CFRelease(str);
+	if (!as) {
+		return false;
+	}
+	CTLineRef line = CTLineCreateWithAttributedString(as);
+	CFRelease(as);
+	if (!line) {
+		return false;
+	}
+	bool matches = false;
+	CFArrayRef runs = CTLineGetGlyphRuns(line);
+	if (CFArrayGetCount(runs) == 1) {
+		CTRunRef run = static_cast<CTRunRef>(CFArrayGetValueAtIndex(runs, 0));
+		const CFIndex glyphCount = CTRunGetGlyphCount(run);
+		const CTRunStatus unexpectedStatus = kCTRunStatusRightToLeft | kCTRunStatusNonMonotonic | kCTRunStatusHasNonIdentityMatrix;
+		CTFontRef runFont = static_cast<CTFontRef>(CFDictionaryGetValue(CTRunGetAttributes(run), kCTFontAttributeName));
+		if (glyphCount == static_cast<CFIndex>(chars.size()) && !(CTRunGetStatus(run) & unexpectedStatus) &&
+			runFont && CFEqual(runFont, font)) {
+			const CFRange rangeAll = CFRangeMake(0, glyphCount);
+			std::vector<CGGlyph> glyphs(glyphCount);
+			CTRunGetGlyphs(run, rangeAll, glyphs.data());
+			std::vector<CGSize> advances(glyphCount);
+			CTRunGetAdvances(run, rangeAll, advances.data());
+			std::vector<CFIndex> indices(glyphCount);
+			CTRunGetStringIndices(run, rangeAll, indices.data());
+			std::vector<CGPoint> positions(glyphCount);
+			CTRunGetPositions(run, rangeAll, positions.data());
+			matches = true;
+			CGFloat xPosition = 0.0;
+			for (CFIndex i = 0; matches && i < glyphCount; i++) {
+				const size_t index = chars[i] - QuartzASCIIMetrics::first;
+				matches = indices[i] == i && glyphs[i] == metrics.glyphs[index] &&
+					advances[i].width == metrics.advances[index] &&
+					positions[i].x == xPosition && positions[i].y == 0.0;
+				xPosition += metrics.advances[index];
+				if (matches && checkOffsets) {
+					matches = CTLineGetOffsetForStringIndex(line, i + 1, nullptr) == xPosition;
+				}
+			}
+			if (matches) {
+				matches = CTLineGetTypographicBounds(line, nullptr, nullptr, nullptr) == xPosition;
+			}
+		}
+	}
+	CFRelease(line);
+	return matches;
+}
+
+// True when the font turns on contextual alternates or contextual ligatures by
+// default. Those can depend on any amount of context, which the layout checks
+// below do not cover, so such fonts (programming ligature fonts, typically)
+// keep the CTLine path.
+bool HasDefaultContextualFeatures(CTFontRef font) {
+	CFArrayRef features = CTFontCopyFeatures(font);
+	if (!features) {
+		return false;
+	}
+	bool contextual = false;
+	for (CFIndex f = 0; !contextual && f < CFArrayGetCount(features); f++) {
+		CFDictionaryRef feature = static_cast<CFDictionaryRef>(CFArrayGetValueAtIndex(features, f));
+		CFNumberRef typeNumber = static_cast<CFNumberRef>(CFDictionaryGetValue(feature, kCTFontFeatureTypeIdentifierKey));
+		CFArrayRef selectors = static_cast<CFArrayRef>(CFDictionaryGetValue(feature, kCTFontFeatureTypeSelectorsKey));
+		int type = -1;
+		if (!typeNumber || !selectors || !CFNumberGetValue(typeNumber, kCFNumberIntType, &type)) {
+			continue;
+		}
+		if (type != kContextualAlternatesType && type != kLigaturesType) {
+			continue;
+		}
+		for (CFIndex s = 0; !contextual && s < CFArrayGetCount(selectors); s++) {
+			CFDictionaryRef selector = static_cast<CFDictionaryRef>(CFArrayGetValueAtIndex(selectors, s));
+			CFNumberRef selectorNumber = static_cast<CFNumberRef>(CFDictionaryGetValue(selector, kCTFontFeatureSelectorIdentifierKey));
+			CFBooleanRef isDefault = static_cast<CFBooleanRef>(CFDictionaryGetValue(selector, kCTFontFeatureSelectorDefaultKey));
+			int selectorId = -1;
+			if (!selectorNumber || !isDefault || !CFBooleanGetValue(isDefault) ||
+				!CFNumberGetValue(selectorNumber, kCFNumberIntType, &selectorId)) {
+				continue;
+			}
+			contextual = (type == kContextualAlternatesType && selectorId == kContextualAlternatesOnSelector) ||
+				(type == kLigaturesType && selectorId == kContextualLigaturesOnSelector);
+		}
+	}
+	CFRelease(features);
+	return contextual;
+}
+
+// Returns the table for font, or nullptr when CoreText's layout of printable ASCII
+// in this font is not one nominal glyph per character. Checked with every ordered
+// pair of printable ASCII characters (pair kerning, two-character ligatures) and
+// with longer sequences that ligature fonts commonly substitute. Each test line
+// stays short: CoreText skips shaping on lines of many thousands of characters.
+std::unique_ptr<QuartzASCIIMetrics> BuildASCIIMetrics(CTFontRef font) {
+	if (!font || HasDefaultContextualFeatures(font)) {
+		return nullptr;
+	}
+	auto metrics = std::make_unique<QuartzASCIIMetrics>();
+	UniChar characters[QuartzASCIIMetrics::count];
+	for (size_t i = 0; i < QuartzASCIIMetrics::count; i++) {
+		characters[i] = static_cast<UniChar>(QuartzASCIIMetrics::first + i);
+	}
+	if (!CTFontGetGlyphsForCharacters(font, characters, metrics->glyphs, QuartzASCIIMetrics::count)) {
+		return nullptr;	// Some character is missing from the font and would come from a fallback font.
+	}
+	CGSize advances[QuartzASCIIMetrics::count];
+	CTFontGetAdvancesForGlyphs(font, kCTFontOrientationHorizontal, metrics->glyphs, advances, QuartzASCIIMetrics::count);
+	for (size_t i = 0; i < QuartzASCIIMetrics::count; i++) {
+		metrics->advances[i] = advances[i].width;
+	}
+
+	CFMutableDictionaryRef attributes = CFDictionaryCreateMutable(kCFAllocatorDefault, 1,
+								      &kCFTypeDictionaryKeyCallBacks,
+								      &kCFTypeDictionaryValueCallBacks);
+	CFDictionarySetValue(attributes, kCTFontAttributeName, font);
+	bool matches = true;
+	std::vector<UniChar> chars;
+	// One line per first character: "a a a ! a \" ... a ~" holds (a, x) and (x, a) for every x.
+	for (size_t first = 0; matches && first < QuartzASCIIMetrics::count; first++) {
+		chars.clear();
+		for (size_t second = 0; second < QuartzASCIIMetrics::count; second++) {
+			chars.push_back(characters[first]);
+			chars.push_back(characters[second]);
+		}
+		matches = LayoutMatchesTable(font, attributes, chars, *metrics, first == 0);
+	}
+	if (matches) {
+		const char sequences[] = "ffi ffl fff fj www ... ..= ..< ::: ;;; === !== =/= <=> <== ==> <-- --> <!-- ->> <<- "
+					 "|||> <||| &&& ||| ### #{ #[ #( /** **/ /// //= +++ *** ~~> ~~~ <<< >>> <~> 0x0 1x1 "
+					 "__ ?? ?. ?= !! :: <> </> </ /> ~@ |> <| .= .- -< >- >= <= != == => -> // /* */";
+		chars.assign(sequences, sequences + strlen(sequences));
+		matches = LayoutMatchesTable(font, attributes, chars, *metrics, true);
+	}
+	CFRelease(attributes);
+	if (!matches) {
+		return nullptr;
+	}
+	return metrics;
+}
+
+// Fonts are recreated whenever Scintilla refreshes its styles (twice a frame while
+// scrolling), so tables are cached for the process by font equality. Entries are
+// never removed: one exists per distinct font and size used, and styles hold raw
+// pointers to them.
+const QuartzASCIIMetrics *ASCIIMetricsForFont(CTFontRef font) {
+	if (!font) {
+		return nullptr;
+	}
+	static std::mutex mutexCache;
+	static CFMutableDictionaryRef cache = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+									&kCFTypeDictionaryKeyCallBacks, nullptr);
+	static const char notEligible = 0;
+	std::lock_guard<std::mutex> guard(mutexCache);
+	const void *value = nullptr;
+	if (CFDictionaryGetValueIfPresent(cache, font, &value)) {
+		return (value == &notEligible) ? nullptr : static_cast<const QuartzASCIIMetrics *>(value);
+	}
+	const QuartzASCIIMetrics *metrics = BuildASCIIMetrics(font).release();
+	CFDictionarySetValue(cache, font, metrics ? static_cast<const void *>(metrics) : &notEligible);
+	return metrics;
+}
+
+// Encodings that decode every printable ASCII byte to the same character
+// (checked with CFStringCreateWithBytes). Shift-JIS maps '\\' and '~' to
+// other characters and MacSymbol maps letters to Greek, so they are left out.
+bool EncodingKeepsASCII(CFStringEncoding encoding) noexcept {
+	switch (encoding) {
+	case kCFStringEncodingUTF8:
+	case kCFStringEncodingISOLatin1:
+	case kCFStringEncodingMacRoman:
+	case kCFStringEncodingWindowsBalticRim:
+	case kCFStringEncodingBig5:
+	case kCFStringEncodingWindowsLatin2:
+	case kCFStringEncodingGB_18030_2000:
+	case kCFStringEncodingWindowsGreek:
+	case kCFStringEncodingEUC_KR:
+	case kCFStringEncodingKOI8_R:
+	case kCFStringEncodingWindowsCyrillic:
+	case kCFStringEncodingWindowsLatin5:
+	case kCFStringEncodingWindowsKoreanJohab:
+	case kCFStringEncodingWindowsHebrew:
+	case kCFStringEncodingWindowsArabic:
+	case kCFStringEncodingWindowsVietnamese:
+	case kCFStringEncodingISOLatinThai:
+		return true;
+	default:
+		return false;
+	}
+}
+
+// Draws text like QuartzTextLayout::draw would for a CTLine: same text matrix and
+// text position, glyphs at the same positions, and the fill colour left set to the
+// text colour as CTLineDraw leaves it. Returns false, having drawn nothing, when
+// the font has no table or text holds a byte outside printable ASCII.
+bool DrawASCII(CGContextRef gc, const QuartzTextStyle *style, std::string_view text, CGColorRef colour,
+	       CGFloat x, CGFloat ybase) {
+	const QuartzASCIIMetrics *metrics = style->getASCIIMetrics();
+	if (!metrics || text.empty() || !gc) {
+		return false;
+	}
+	constexpr size_t stackLength = 256;
+	CGGlyph glyphsStack[stackLength];
+	CGPoint positionsStack[stackLength];
+	std::vector<CGGlyph> glyphsHeap;
+	std::vector<CGPoint> positionsHeap;
+	CGGlyph *glyphs = glyphsStack;
+	CGPoint *positions = positionsStack;
+	if (text.length() > stackLength) {
+		glyphsHeap.resize(text.length());
+		positionsHeap.resize(text.length());
+		glyphs = glyphsHeap.data();
+		positions = positionsHeap.data();
+	}
+	CGFloat xPosition = 0.0;
+	for (size_t i = 0; i < text.length(); i++) {
+		const unsigned char ch = text[i];
+		if (!IsPrintableASCII(ch)) {
+			return false;
+		}
+		const size_t index = ch - QuartzASCIIMetrics::first;
+		glyphs[i] = metrics->glyphs[index];
+		positions[i] = CGPointMake(xPosition, 0.0);
+		xPosition += metrics->advances[index];
+	}
+	CGContextSetFillColorWithColor(gc, colour);
+	CGContextSetTextMatrix(gc, CGAffineTransformMakeScale(1.0, -1.0));
+	CGContextSetTextPosition(gc, x, ybase);
+	CTFontDrawGlyphs(style->getFontRef(), glyphs, positions, text.length(), gc);
+	return true;
+}
+
+// Fills positions as SurfaceImpl::MeasureWidths does from a CTLine: the running
+// sum of advances, one entry per byte. Returns false when the font has no table
+// or text holds a byte outside printable ASCII; positions is then partly written.
+bool MeasureASCII(const QuartzTextStyle *style, std::string_view text, XYPOSITION *positions) noexcept {
+	const QuartzASCIIMetrics *metrics = style->getASCIIMetrics();
+	if (!metrics || text.empty()) {
+		return false;
+	}
+	CGFloat xPosition = 0.0;
+	for (size_t i = 0; i < text.length(); i++) {
+		const unsigned char ch = text[i];
+		if (!IsPrintableASCII(ch)) {
+			return false;
+		}
+		xPosition += metrics->advances[ch - QuartzASCIIMetrics::first];
+		positions[i] = xPosition;
+	}
+	return true;
+}
+
+// Width as SurfaceImpl::WidthText returns it from a CTLine, including the
+// rounding to float of QuartzTextLayout::MeasureStringWidth.
+std::optional<XYPOSITION> WidthASCII(const QuartzTextStyle *style, std::string_view text) noexcept {
+	const QuartzASCIIMetrics *metrics = style->getASCIIMetrics();
+	if (!metrics || text.empty()) {
+		return std::nullopt;
+	}
+	CGFloat width = 0.0;
+	for (const unsigned char ch : text) {
+		if (!IsPrintableASCII(ch)) {
+			return std::nullopt;
+		}
+		width += metrics->advances[ch - QuartzASCIIMetrics::first];
+	}
+	return static_cast<XYPOSITION>(static_cast<float>(width));
+}
+
+}
+
 //----------------- FontQuartz ---------------------------------------------------------------------
 
 class FontQuartz : public Font {
@@ -164,6 +463,7 @@ public:
 		QuartzFont font(fp.faceName, strlen(fp.faceName), fp.size, fp.weight, fp.stretch, fp.italic);
 		CTFontRef fontRef = font.getFontID();
 		style->setFontRef(fontRef, fp.characterSet);
+		style->setASCIIMetrics(ASCIIMetricsForFont(fontRef));	// LOCAL CHANGE: ASCII fast path.
 	}
 	FontQuartz(const QuartzTextStyle *style_) {
 		style = std::make_unique<QuartzTextStyle>(style_);
@@ -1311,6 +1611,10 @@ void SurfaceImpl::DrawTextTransparent(PRectangle rc, const Font *font_, XYPOSITI
 	CFStringEncoding encoding = EncodingFromCharacterSet(UnicodeMode(), style->getCharacterSet());
 
 	CGColorRef color = GenericColour(fore);	// LOCAL CHANGE: cached text colour.
+	// LOCAL CHANGE: ASCII fast path (see DrawASCII).
+	if (EncodingKeepsASCII(encoding) && DrawASCII(gc, style, text, color, rc.left, ybase)) {
+		return;
+	}
 
 	style->setCTStyleColour(color);
 
@@ -1326,6 +1630,10 @@ void SurfaceImpl::MeasureWidths(const Font *font_, std::string_view text, XYPOSI
 		return;
 	}
 	CFStringEncoding encoding = EncodingFromCharacterSet(UnicodeMode(), style->getCharacterSet());
+	// LOCAL CHANGE: ASCII fast path (see MeasureASCII).
+	if (EncodingKeepsASCII(encoding) && MeasureASCII(style, text, positions)) {
+		return;
+	}
 	QuartzTextLayout layoutMeasure(text, encoding, style);
 	const CFStringEncoding encodingUsed = layoutMeasure.getEncoding();
 
@@ -1389,6 +1697,12 @@ XYPOSITION SurfaceImpl::WidthText(const Font *font_, std::string_view text) {
 		return 1;
 	}
 	CFStringEncoding encoding = EncodingFromCharacterSet(UnicodeMode(), style->getCharacterSet());
+	// LOCAL CHANGE: ASCII fast path (see WidthASCII).
+	if (EncodingKeepsASCII(encoding)) {
+		if (const std::optional<XYPOSITION> width = WidthASCII(style, text)) {
+			return *width;
+		}
+	}
 	QuartzTextLayout layoutMeasure(text, encoding, style);
 
 	return static_cast<XYPOSITION>(layoutMeasure.MeasureStringWidth());
@@ -1423,6 +1737,10 @@ void SurfaceImpl::DrawTextTransparentUTF8(PRectangle rc, const Font *font_, XYPO
 	const CFStringEncoding encoding = kCFStringEncodingUTF8;
 
 	CGColorRef color = GenericColour(fore);	// LOCAL CHANGE: cached text colour.
+	// LOCAL CHANGE: ASCII fast path (see DrawASCII).
+	if (DrawASCII(gc, style, text, color, rc.left, ybase)) {
+		return;
+	}
 
 	style->setCTStyleColour(color);
 
@@ -1438,6 +1756,10 @@ void SurfaceImpl::MeasureWidthsUTF8(const Font *font_, std::string_view text, XY
 		return;
 	}
 	constexpr CFStringEncoding encoding = kCFStringEncodingUTF8;
+	// LOCAL CHANGE: ASCII fast path (see MeasureASCII).
+	if (MeasureASCII(style, text, positions)) {
+		return;
+	}
 	QuartzTextLayout layoutMeasure(text, encoding, style);
 	const CFStringEncoding encodingUsed = layoutMeasure.getEncoding();
 
@@ -1481,6 +1803,10 @@ XYPOSITION SurfaceImpl::WidthTextUTF8(const Font *font_, std::string_view text) 
 	const QuartzTextStyle *style = TextStyleFromFont(font_);
 	if (!style) {
 		return 1;
+	}
+	// LOCAL CHANGE: ASCII fast path (see WidthASCII).
+	if (const std::optional<XYPOSITION> width = WidthASCII(style, text)) {
+		return *width;
 	}
 	QuartzTextLayout layoutMeasure(text, kCFStringEncodingUTF8, style);
 	return static_cast<XYPOSITION>(layoutMeasure.MeasureStringWidth());
