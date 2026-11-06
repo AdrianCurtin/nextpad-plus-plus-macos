@@ -56,6 +56,9 @@
 #include "EditModel.h"
 #include "MarginView.h"
 #include "EditView.h"
+// LOCAL CHANGE: performance probes (src/perf/NppPerfProbe.h); inert unless
+// the app turns diagnostics on.
+#include "NppPerfProbe.h"
 
 using namespace Scintilla;
 
@@ -275,6 +278,8 @@ constexpr LineMarker::FoldPart PartForBar(bool markBefore, bool markAfter) {
 
 void MarginView::PaintOneMargin(Surface *surface, PRectangle rc, PRectangle rcOneMargin, const MarginStyle &marginStyle,
 	const EditModel &model, const ViewStyle &vs) const {
+	// LOCAL CHANGE: performance probe (one margin column: numbers, symbols or folding).
+	NPP_PERF_SCOPE_FINE("MarginView.PaintOneMargin", "type=%d width=%d height=%.0f", static_cast<int>(marginStyle.style), marginStyle.width, rcOneMargin.Height());
 	const Point ptOrigin = model.GetVisibleOriginInMain();
 	const Sci::Line lineStartPaint = static_cast<Sci::Line>(rcOneMargin.top + ptOrigin.y) / vs.lineHeight;
 	Sci::Line visibleLine = model.TopLineOfMain() + lineStartPaint;
@@ -389,6 +394,7 @@ void MarginView::PaintOneMargin(Surface *surface, PRectangle rc, PRectangle rcOn
 					sNumber = number;
 				}
 				PRectangle rcNumber = rcMarker;
+				NPP_PERF_COUNT("MarginView.lineNumberDrawn");	// LOCAL CHANGE: performance probe.
 				// Right justify
 				const XYPOSITION width = surface->WidthText(vs.styles[StyleLineNumber].font.get(), sNumber);
 				const XYPOSITION xpos = rcNumber.right - width - vs.marginNumberPadding;
@@ -464,6 +470,8 @@ void MarginView::PaintOneMargin(Surface *surface, PRectangle rc, PRectangle rcOn
 void MarginView::PaintMargin(Surface *surface, Sci::Line topLine, PRectangle rc, PRectangle rcMargin,
 	const EditModel &model, const ViewStyle &vs) {
 
+	// LOCAL CHANGE: performance probe (all margins for one paint rectangle).
+	NPP_PERF_SCOPE("MarginView.PaintMargin", "rect=%.0f,%.0f,%.0f,%.0f top=%ld", rc.left, rc.top, rc.Width(), rc.Height(), static_cast<long>(topLine));
 	PRectangle rcOneMargin = rcMargin;
 	rcOneMargin.right = rcMargin.left;
 	if (rcOneMargin.bottom < rc.bottom)
@@ -507,6 +515,8 @@ void MarginView::PaintMargin(Surface *surface, Sci::Line topLine, PRectangle rc,
 			}
 
 			if (marginStyle.ShowsFolding() && highlightDelimiter.isEnabled) {
+				// LOCAL CHANGE: performance probe (fold block highlight search).
+				NPP_PERF_SCOPE_FINE("MarginView.GetHighlightDelimiters");
 				const Sci::Line lastLine = model.pcs->DocFromDisplay(topLine + model.LinesOnScreen()) + 1;
 				model.pdoc->GetHighlightDelimiters(highlightDelimiter,
 					model.pdoc->SciLineFromPosition(model.sel.MainCaret()), lastLine);

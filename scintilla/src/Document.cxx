@@ -50,6 +50,9 @@
 #include "RESearch.h"
 #include "UniConversion.h"
 #include "ElapsedPeriod.h"
+// LOCAL CHANGE: performance probes (src/perf/NppPerfProbe.h); inert unless
+// the app turns diagnostics on.
+#include "NppPerfProbe.h"
 
 using namespace Scintilla;
 using namespace Scintilla::Internal;
@@ -88,8 +91,16 @@ void LexInterface::Colourise(Sci::Position start, Sci::Position end) {
 			styleStart = pdoc->StyleAt(start - 1);
 
 		if (len > 0) {
-			instance->Lex(start, len, styleStart, pdoc);
-			instance->Fold(start, len, styleStart, pdoc);
+			// LOCAL CHANGE: performance probes (lexer and folder cost per range).
+			NPP_PERF_VALUE("Lexer.bytes", len);
+			{
+				NPP_PERF_SCOPE("Lexer.Lex", "start=%ld len=%ld", static_cast<long>(start), static_cast<long>(len));
+				instance->Lex(start, len, styleStart, pdoc);
+			}
+			{
+				NPP_PERF_SCOPE("Lexer.Fold", "start=%ld len=%ld", static_cast<long>(start), static_cast<long>(len));
+				instance->Fold(start, len, styleStart, pdoc);
+			}
 		}
 
 		performingStyle = false;
@@ -2612,6 +2623,9 @@ bool SCI_METHOD Document::SetStyles(Sci_Position length, const char *styles) {
 
 void Document::EnsureStyledTo(Sci::Position pos) {
 	if ((enteredStyling == 0) && (pos > GetEndStyled())) {
+		// LOCAL CHANGE: performance probes (styling on demand: range and time).
+		NPP_PERF_SCOPE("Document.EnsureStyledTo", "from=%ld to=%ld container=%d", static_cast<long>(GetEndStyled()), static_cast<long>(pos), (pli && !pli->UseContainerLexing()) ? 0 : 1);
+		NPP_PERF_VALUE("Document.EnsureStyledTo.bytes", pos - GetEndStyled());
 		IncrementStyleClock();
 		if (pli && !pli->UseContainerLexing()) {
 			const Sci::Position endStyledTo = LineStartPosition(GetEndStyled());

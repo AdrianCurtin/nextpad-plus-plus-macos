@@ -45,6 +45,9 @@
 #import "ScintillaView.h"
 #import "ScintillaCocoa.h"
 #import "PlatCocoa.h"
+// LOCAL CHANGE: performance probes (src/perf/NppPerfProbe.h); inert unless
+// the app turns diagnostics on.
+#include "NppPerfProbe.h"
 
 using namespace Scintilla;
 using namespace Scintilla::Internal;
@@ -339,7 +342,11 @@ const QuartzASCIIMetrics *ASCIIMetricsForFont(CTFontRef font) {
 	if (CFDictionaryGetValueIfPresent(cache, font, &value)) {
 		return (value == &notEligible) ? nullptr : static_cast<const QuartzASCIIMetrics *>(value);
 	}
+	NPP_PERF_SCOPE("PlatCocoa.ASCIIMetrics.build");	// LOCAL CHANGE: performance probe.
 	const QuartzASCIIMetrics *metrics = BuildASCIIMetrics(font).release();
+	if (!metrics) {
+		NPP_PERF_COUNT("PlatCocoa.ASCIIMetrics.ineligible");	// LOCAL CHANGE: performance probe.
+	}
 	CFDictionarySetValue(cache, font, metrics ? static_cast<const void *>(metrics) : &notEligible);
 	return metrics;
 }
@@ -406,6 +413,7 @@ bool DrawASCII(CGContextRef gc, const QuartzTextStyle *style, std::string_view t
 		positions[i] = CGPointMake(xPosition, 0.0);
 		xPosition += metrics->advances[index];
 	}
+	NPP_PERF_COUNT("PlatCocoa.DrawText.ascii");	// LOCAL CHANGE: performance probe.
 	CGContextSetFillColorWithColor(gc, colour);
 	CGContextSetTextMatrix(gc, CGAffineTransformMakeScale(1.0, -1.0));
 	CGContextSetTextPosition(gc, x, ybase);
@@ -430,6 +438,7 @@ bool MeasureASCII(const QuartzTextStyle *style, std::string_view text, XYPOSITIO
 		xPosition += metrics->advances[ch - QuartzASCIIMetrics::first];
 		positions[i] = xPosition;
 	}
+	NPP_PERF_COUNT("PlatCocoa.MeasureWidths.ascii");	// LOCAL CHANGE: performance probe.
 	return true;
 }
 
@@ -458,6 +467,8 @@ class FontQuartz : public Font {
 public:
 	std::unique_ptr<QuartzTextStyle> style;
 	FontQuartz(const FontParameters &fp) {
+		// LOCAL CHANGE: performance probe (CTFont creation for a style).
+		NPP_PERF_SCOPE("PlatCocoa.FontCreate", "%{public}s size=%.1f weight=%d", fp.faceName, fp.size, static_cast<int>(fp.weight));
 		style = std::make_unique<QuartzTextStyle>();
 		// Create the font with attributes
 		QuartzFont font(fp.faceName, strlen(fp.faceName), fp.size, fp.weight, fp.stretch, fp.italic);
@@ -533,6 +544,8 @@ public:
 };
 
 ScreenLineLayout::ScreenLineLayout(const IScreenLine *screenLine) : text(screenLine->Text()) {
+	// LOCAL CHANGE: performance probe (bidirectional line layout).
+	NPP_PERF_SCOPE_FINE("PlatCocoa.ScreenLineLayout", "bytes=%lu", static_cast<unsigned long>(text.length()));
 	const UInt8 *puiBuffer = reinterpret_cast<const UInt8 *>(text.data());
 	std::string_view sv = text;
 
@@ -1058,6 +1071,7 @@ void SurfaceImpl::RectangleFrame(PRectangle rc, Stroke stroke) {
 //--------------------------------------------------------------------------------------------------
 
 void SurfaceImpl::FillRectangle(PRectangle rc, Fill fill) {
+	NPP_PERF_COUNT("PlatCocoa.FillRectangle");	// LOCAL CHANGE: performance probe.
 	if (gc) {
 		FillColour(fill.colour);
 		CGRect rect = PRectangleToCGRect(rc);
@@ -1493,6 +1507,8 @@ void SurfaceImpl::Copy(PRectangle rc, Scintilla::Internal::Point from, Surface &
 
 	// For now, assume that copy can only be called on PixMap surfaces
 	SurfaceImpl &source = static_cast<SurfaceImpl &>(surfaceSource);
+	// LOCAL CHANGE: performance probe (pixmap to window copy, buffered drawing).
+	NPP_PERF_SCOPE_FINE("PlatCocoa.Copy", "w=%.0f h=%.0f", rc.Width(), rc.Height());
 
 	// Get the CGImageRef
 	CGImageRef image = source.CreateImage();
@@ -1604,6 +1620,9 @@ CFStringEncoding EncodingFromCharacterSet(bool unicode, CharacterSet characterSe
 
 void SurfaceImpl::DrawTextTransparent(PRectangle rc, const Font *font_, XYPOSITION ybase, std::string_view text,
 				      ColourRGBA fore) {
+	// LOCAL CHANGE: performance probes (one text run drawn with CoreText).
+	NPP_PERF_SCOPE_FINE("PlatCocoa.DrawText", "bytes=%lu", static_cast<unsigned long>(text.length()));
+	NPP_PERF_VALUE("PlatCocoa.DrawText.bytes", text.length());
 	QuartzTextStyle *style = TextStyleFromFont(font_);
 	if (!style) {
 		return;
@@ -1625,6 +1644,9 @@ void SurfaceImpl::DrawTextTransparent(PRectangle rc, const Font *font_, XYPOSITI
 //--------------------------------------------------------------------------------------------------
 
 void SurfaceImpl::MeasureWidths(const Font *font_, std::string_view text, XYPOSITION *positions) {
+	// LOCAL CHANGE: performance probes (one segment measured with CoreText).
+	NPP_PERF_SCOPE_FINE("PlatCocoa.MeasureWidths", "bytes=%lu", static_cast<unsigned long>(text.length()));
+	NPP_PERF_VALUE("PlatCocoa.MeasureWidths.bytes", text.length());
 	const QuartzTextStyle *style = TextStyleFromFont(font_);
 	if (!style) {
 		return;
@@ -1692,6 +1714,7 @@ void SurfaceImpl::MeasureWidths(const Font *font_, std::string_view text, XYPOSI
 }
 
 XYPOSITION SurfaceImpl::WidthText(const Font *font_, std::string_view text) {
+	NPP_PERF_SCOPE_FINE("PlatCocoa.WidthText", "bytes=%lu", static_cast<unsigned long>(text.length()));	// LOCAL CHANGE: performance probe.
 	const QuartzTextStyle *style = TextStyleFromFont(font_);
 	if (!style) {
 		return 1;
@@ -1730,6 +1753,9 @@ void SurfaceImpl::DrawTextClippedUTF8(PRectangle rc, const Font *font_, XYPOSITI
 
 void SurfaceImpl::DrawTextTransparentUTF8(PRectangle rc, const Font *font_, XYPOSITION ybase, std::string_view text,
 				      ColourRGBA fore) {
+	// LOCAL CHANGE: performance probes (one text run drawn with CoreText).
+	NPP_PERF_SCOPE_FINE("PlatCocoa.DrawText", "bytes=%lu utf8=1", static_cast<unsigned long>(text.length()));
+	NPP_PERF_VALUE("PlatCocoa.DrawText.bytes", text.length());
 	QuartzTextStyle *style = TextStyleFromFont(font_);
 	if (!style) {
 		return;
@@ -1751,6 +1777,9 @@ void SurfaceImpl::DrawTextTransparentUTF8(PRectangle rc, const Font *font_, XYPO
 //--------------------------------------------------------------------------------------------------
 
 void SurfaceImpl::MeasureWidthsUTF8(const Font *font_, std::string_view text, XYPOSITION *positions) {
+	// LOCAL CHANGE: performance probes (one segment measured with CoreText).
+	NPP_PERF_SCOPE_FINE("PlatCocoa.MeasureWidths", "bytes=%lu utf8=1", static_cast<unsigned long>(text.length()));
+	NPP_PERF_VALUE("PlatCocoa.MeasureWidths.bytes", text.length());
 	const QuartzTextStyle *style = TextStyleFromFont(font_);
 	if (!style) {
 		return;
@@ -1800,6 +1829,7 @@ void SurfaceImpl::MeasureWidthsUTF8(const Font *font_, std::string_view text, XY
 }
 
 XYPOSITION SurfaceImpl::WidthTextUTF8(const Font *font_, std::string_view text) {
+	NPP_PERF_SCOPE_FINE("PlatCocoa.WidthText", "bytes=%lu utf8=1", static_cast<unsigned long>(text.length()));	// LOCAL CHANGE: performance probe.
 	const QuartzTextStyle *style = TextStyleFromFont(font_);
 	if (!style) {
 		return 1;
@@ -1986,6 +2016,7 @@ void Window::Show(bool show) {
  * Invalidates the entire window or view so it is completely redrawn.
  */
 void Window::InvalidateAll() {
+	NPP_PERF_COUNT("PlatCocoa.InvalidateAll");	// LOCAL CHANGE: performance probe.
 	if (wid) {
 		id idWin = (__bridge id)(wid);
 		NSView *container;
@@ -2007,6 +2038,9 @@ void Window::InvalidateAll() {
  * Invalidates part of the window or view so only this part redrawn.
  */
 void Window::InvalidateRectangle(PRectangle rc) {
+	// LOCAL CHANGE: performance probes (invalidated height in points).
+	NPP_PERF_COUNT("PlatCocoa.InvalidateRectangle");
+	NPP_PERF_VALUE("PlatCocoa.InvalidateRectangle.heightPt", rc.Height());
 	if (wid) {
 		id idWin = (__bridge id)(wid);
 		NSView *container;

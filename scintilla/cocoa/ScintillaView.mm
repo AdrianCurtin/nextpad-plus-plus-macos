@@ -12,6 +12,8 @@
 
 #include <cmath>
 
+#import <QuartzCore/QuartzCore.h>
+
 #include <string_view>
 #include <vector>
 #include <optional>
@@ -25,8 +27,9 @@
 #import "Platform.h"
 #import "ScintillaView.h"
 #import "ScintillaCocoa.h"
-
-#import <QuartzCore/QuartzCore.h>
+// LOCAL CHANGE: performance probes (src/perf/NppPerfProbe.h); inert unless
+// the app turns diagnostics on.
+#include "NppPerfProbe.h"
 
 // LOCAL CHANGE: rasterize the text view's layer in 8 bits per channel.
 // On macOS 26 and later AppKit keeps what -drawRect: draws as a display list
@@ -198,6 +201,8 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 }
 
 - (void) drawHashMarksAndLabelsInRect: (NSRect) aRect {
+	// LOCAL CHANGE: performance probe.
+	NPP_PERF_SCOPE("SCIMarginView.drawHashMarksAndLabels", "rect=%.0f,%.0f,%.0f,%.0f", aRect.origin.x, aRect.origin.y, aRect.size.width, aRect.size.height);
 	if (owner) {
 		NSRect contentRect = self.scrollView.contentView.bounds;
 		NSRect marginRect = self.bounds;
@@ -292,10 +297,13 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
  * (markers, folds, styles, Redraw) and from AppKit outside a scroll are kept.
  */
 - (void) setNeedsDisplayInRect: (NSRect) invalidRect {
+	NPP_PERF_COUNT_N("SCIMarginView.invalidate.scroll", _reflectingScroll ? 1 : 0);	// LOCAL CHANGE: performance probes.
+	NPP_PERF_COUNT_N("SCIMarginView.invalidate.other", _reflectingScroll ? 0 : 1);
 	if (_reflectingScroll && mPainted) {
 		const NSRect clip = self.scrollView.contentView.bounds;
 		if (clip.origin.y == mPaintedClipBounds.origin.y &&
 		    clip.size.height == mPaintedClipBounds.size.height) {
+			NPP_PERF_COUNT("SCIMarginView.scrollInvalidate.skipped");
 			return;
 		}
 	}
@@ -303,6 +311,9 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 }
 
 - (void) drawRect: (NSRect) rect {
+	// LOCAL CHANGE: performance probes (margin paint, dirty height in points).
+	NPP_PERF_SCOPE("SCIMarginView.drawRect", "rect=%.0f,%.0f,%.0f,%.0f", rect.origin.x, rect.origin.y, rect.size.width, rect.size.height);
+	NPP_PERF_VALUE("SCIMarginView.drawRect.heightPt", rect.size.height);
 	// LOCAL CHANGE: remember the vertical position this paint shows.
 	mPainted = YES;
 	mPaintedClipBounds = self.scrollView.contentView.bounds;
@@ -397,6 +408,8 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
  * When the view is resized we need to let the backend know.
  */
 - (void) setFrame: (NSRect) frame {
+	// LOCAL CHANGE: performance probe (document view resize).
+	NPP_PERF_SCOPE("SCIContentView.setFrame", "w=%.0f h=%.0f", frame.size.width, frame.size.height);
 	super.frame = frame;
 
 	mOwner.backend->Resize();
@@ -442,9 +455,12 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 		return;
 	}
 
+	// LOCAL CHANGE: performance probe.
+	NPP_PERF_SCOPE("SCIContentView.viewWillDraw");
 	const NSRect *rects;
 	NSInteger nRects = 0;
 	[self getRectsBeingDrawn: &rects count: &nRects];
+	NPP_PERF_VALUE("SCIContentView.viewWillDraw.rects", nRects);	// LOCAL CHANGE: performance probe.
 	if (nRects > 0) {
 		NSRect rectUnion = rects[0];
 		for (int i=0; i<nRects; i++) {
@@ -461,6 +477,9 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
  * Called before responsive scrolling overdraw.
  */
 - (void) prepareContentInRect: (NSRect) rect {
+	// LOCAL CHANGE: performance probes (responsive scrolling overdraw request).
+	NPP_PERF_SCOPE("SCIContentView.prepareContentInRect", "rect=%.0f,%.0f,%.0f,%.0f", rect.origin.x, rect.origin.y, rect.size.width, rect.size.height);
+	NPP_PERF_VALUE("SCIContentView.prepareContentInRect.heightPt", rect.size.height);
 	if (mOwner)
 		mOwner.backend->WillDraw(rect);
 #if MAC_OS_X_VERSION_MAX_ALLOWED > 1080
@@ -485,12 +504,30 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
  * Gets called by the runtime when the view needs repainting.
  */
 - (void) drawRect: (NSRect) rect {
+	// LOCAL CHANGE: performance probes. The paint hook lets the app time the
+	// first frame after a file load and feed the live HUD.
+	const uint64_t perfT0 = NppPerf::On() ? NppPerf::NowNs() : 0;
+	NPP_PERF_SCOPE("SCIContentView.drawRect", "rect=%.0f,%.0f,%.0f,%.0f", rect.origin.x, rect.origin.y, rect.size.width, rect.size.height);
+	NPP_PERF_VALUE("SCIContentView.drawRect.heightPt", rect.size.height);
+	NPP_PERF_VALUE("SCIContentView.drawRect.areaPt2", rect.size.width * rect.size.height);
+	// LOCAL CHANGE: performance probe. Paints while the window is occluded
+	// (screen locked, display asleep, covered) are not paced by the display, so
+	// frame timings from such a run do not describe scrolling.
+	if (perfT0 && !(self.window.occlusionState & NSWindowOcclusionStateVisible))
+		NPP_PERF_COUNT("SCIContentView.drawRect.occluded");
 	CGContextRef context = CGContextCurrent();
 
 	if (!mOwner.backend->Draw(rect, context)) {
+		NPP_PERF_EVENT("SCIContentView.drawRect.retry");	// LOCAL CHANGE: performance probe.
 		dispatch_async(dispatch_get_main_queue(), ^ {
 			[self setNeedsDisplay: YES];
 		});
+	}
+	if (perfT0) {
+		NppPerf::PaintHook hook = NppPerf::gContentPaintHook.load(std::memory_order_relaxed);
+		if (hook)
+			hook((__bridge void *)self, rect.size.width, rect.size.height,
+				self.visibleRect.size.width, self.visibleRect.size.height, perfT0, NppPerf::NowNs());
 	}
 	// LOCAL CHANGE: 8-bit text layer (see SCIUse8BitContentLayer). The
 	// sublayer exists once AppKit has displayed the view and can be replaced
@@ -908,6 +945,7 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 }
 
 - (void) keyDown: (NSEvent *) theEvent {
+	NPP_PERF_SCOPE("SCIContentView.keyDown", "keyCode=%u repeat=%d", static_cast<unsigned>(theEvent.keyCode), theEvent.ARepeat ? 1 : 0);	// LOCAL CHANGE: performance probe.
 	bool handled = false;
 	if (mMarkedTextRange.length == 0) {
 		[self convertColumnSelectionToMultiEditForKey: theEvent];
@@ -964,6 +1002,18 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
  * Pinch gestures and key commands can also be used for magnification.
  */
 - (void) scrollWheel: (NSEvent *) theEvent {
+	// LOCAL CHANGE: performance probes (one scroll event through NSScrollView,
+	// including the synchronous scroll, bounds change and SCN_UPDATEUI work).
+	NPP_PERF_SCOPE("SCIContentView.scrollWheel", "dx=%.2f dy=%.2f precise=%d phase=%lu momentum=%lu",
+		theEvent.scrollingDeltaX, theEvent.scrollingDeltaY, theEvent.hasPreciseScrollingDeltas ? 1 : 0,
+		static_cast<unsigned long>(theEvent.phase), static_cast<unsigned long>(theEvent.momentumPhase));
+	NPP_PERF_COUNT_N("SCIContentView.scrollWheel.precise", theEvent.hasPreciseScrollingDeltas ? 1 : 0);
+	NPP_PERF_COUNT_N("SCIContentView.scrollWheel.momentum", theEvent.momentumPhase != NSEventPhaseNone ? 1 : 0);
+	if (NppPerf::On()) {
+		// Event age: time from the event's timestamp to its handling here.
+		const double ageMs = ([NSProcessInfo processInfo].systemUptime - theEvent.timestamp) * 1000.0;
+		NPP_PERF_VALUE("SCIContentView.scrollWheel.eventAgeUs", ageMs * 1000.0);
+	}
 #ifdef SCROLL_WHEEL_MAGNIFICATION
 	if (([theEvent modifierFlags] & NSEventModifierFlagCommand) != 0) {
 		mOwner.backend->MouseWheel(theEvent);
@@ -1006,6 +1056,7 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
  * Ensure scrolling is aligned to whole lines instead of starting part-way through a line
  */
 - (NSRect) adjustScroll: (NSRect) proposedVisibleRect {
+	NPP_PERF_COUNT("SCIContentView.adjustScroll");	// LOCAL CHANGE: performance probe.
 	if (!mOwner)
 		return proposedVisibleRect;
 	NSRect rc = proposedVisibleRect;
@@ -1898,6 +1949,29 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 
 	[self positionSubViews];
 
+	// LOCAL CHANGE: performance probe. Records how AppKit backs the text view
+	// once its layers exist: the document view layer, its content sublayers
+	// (on macOS 26 and later a visible-rect-sized layer whose drawing is kept
+	// as a display list) and responsive scrolling. NSClipView.copiesOnScroll
+	// is deprecated (reading it warns), so it is not recorded.
+	if (NppPerf::On() && self.window) {
+		dispatch_async(dispatch_get_main_queue(), ^{
+			NSView *content = self->mContent;
+			CALayer *layer = content.layer;
+			CALayer *sub = layer.sublayers.firstObject;
+			NPP_PERF_EVENT("ScintillaView.layerConfig",
+				"layer=%{public}s sublayers=%lu sub=%{public}s subAsync=%d subFrame=%.0fx%.0f "
+				"redrawPolicy=%ld responsive=%d opaque=%d",
+				layer ? NSStringFromClass([layer class]).UTF8String : "none",
+				static_cast<unsigned long>(layer.sublayers.count),
+				sub ? NSStringFromClass([sub class]).UTF8String : "none",
+				sub.drawsAsynchronously ? 1 : 0, sub.frame.size.width, sub.frame.size.height,
+				static_cast<long>(content.layerContentsRedrawPolicy),
+				[[content class] isCompatibleWithResponsiveScrolling] ? 1 : 0,
+				content.opaque ? 1 : 0);
+		});
+	}
+
 	// Enable also mouse move events for our window (and so this view).
 	[self.window setAcceptsMouseMovedEvents: YES];
 }
@@ -1945,6 +2019,8 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
  */
 - (void) setMarginWidth: (int) width {
 	if (marginView.ruleThickness != width) {
+		// LOCAL CHANGE: performance probe (ruler thickness change re-tiles the scroll view).
+		NPP_PERF_EVENT("ScintillaView.setMarginWidth.changed", "width=%d", width);
 		marginView.marginWidth = width;
 		marginView.ruleThickness = marginView.requiredThickness;
 	}
@@ -1958,6 +2034,8 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
  */
 - (void) scrollerAction: (id) sender {
 #pragma unused(sender)
+	// LOCAL CHANGE: performance probe (NSViewBoundsDidChangeNotification of the clip view).
+	NPP_PERF_SCOPE("ScintillaView.boundsDidChange");
 	mBackend->UpdateForScroll();
 }
 
@@ -1967,6 +2045,8 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
  * Used to reposition our content depending on the size of the view.
  */
 - (void) setFrame: (NSRect) newFrame {
+	// LOCAL CHANGE: performance probe (editor view resize: subviews and backend).
+	NPP_PERF_SCOPE("ScintillaView.setFrame", "w=%.0f h=%.0f", newFrame.size.width, newFrame.size.height);
 	NSRect previousFrame = self.frame;
 	super.frame = newFrame;
 	[self positionSubViews];

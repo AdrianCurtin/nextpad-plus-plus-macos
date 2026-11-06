@@ -54,6 +54,9 @@
 #include "DBCS.h"
 #include "Selection.h"
 #include "PositionCache.h"
+// LOCAL CHANGE: performance probes (src/perf/NppPerfProbe.h); inert unless
+// the app turns diagnostics on.
+#include "NppPerfProbe.h"
 
 using namespace Scintilla;
 using namespace Scintilla::Internal;
@@ -581,7 +584,10 @@ void LineLayoutCache::SetLevel(LineCache level_) noexcept {
 std::shared_ptr<LineLayout> LineLayoutCache::Retrieve(Sci::Line lineNumber, Sci::Line lineCaret, int maxChars, int styleClock_,
                                       Sci::Line linesOnScreen, Sci::Line linesInDoc) {
 	AllocateForLevel(linesOnScreen, linesInDoc);
+	NPP_PERF_COUNT("LineLayoutCache.retrieve");	// LOCAL CHANGE: performance probe.
 	if (styleClock != styleClock_) {
+		// LOCAL CHANGE: performance probe (styling moved on; every entry needs a text/style check).
+		NPP_PERF_COUNT("LineLayoutCache.styleClockInvalidate");
 		Invalidate(LineLayout::ValidLevel::checkTextAndStyle);
 		styleClock = styleClock_;
 	}
@@ -620,6 +626,7 @@ std::shared_ptr<LineLayout> LineLayoutCache::Retrieve(Sci::Line lineNumber, Sci:
 			cache[pos].reset();
 		}
 		if (!cache[pos]) {
+			NPP_PERF_COUNT("LineLayoutCache.allocate");	// LOCAL CHANGE: performance probe.
 			cache[pos] = std::make_shared<LineLayout>(lineNumber, maxChars);
 		}
 #ifdef CHECK_LLC
@@ -636,6 +643,7 @@ std::shared_ptr<LineLayout> LineLayoutCache::Retrieve(Sci::Line lineNumber, Sci:
 	}
 
 	// Only reach here for level == Cache::none
+	NPP_PERF_COUNT("LineLayoutCache.uncached");	// LOCAL CHANGE: performance probe.
 	return std::make_shared<LineLayout>(lineNumber, maxChars);
 }
 
@@ -1089,6 +1097,7 @@ void PositionCacheEntry::ResetClock() noexcept {
 PositionCache::PositionCache() = default;
 
 void PositionCache::Clear() noexcept {
+	NPP_PERF_COUNT("PositionCache.clear");	// LOCAL CHANGE: performance probe.
 	if (!allClear) {
 		for (PositionCacheEntry &pce : pces) {
 			pce.Clear();
@@ -1112,6 +1121,7 @@ void PositionCache::MeasureWidths(Surface *surface, const ViewStyle &vstyle, uns
 	const Style &style = vstyle.styles[styleNumber];
 	if (style.monospaceASCII) {
 		if (AllGraphicASCII(sv)) {
+			NPP_PERF_COUNT("PositionCache.monospaceFastPath");	// LOCAL CHANGE: performance probe.
 			const XYPOSITION monospaceCharacterWidth = style.monospaceCharacterWidth;
 			for (size_t i = 0; i < sv.length(); i++) {
 				positions[i] = monospaceCharacterWidth * static_cast<XYPOSITION>(i+1);
@@ -1119,6 +1129,8 @@ void PositionCache::MeasureWidths(Surface *surface, const ViewStyle &vstyle, uns
 			return;
 		}
 	}
+	// LOCAL CHANGE: performance probe (segment lengths that reach the cache).
+	NPP_PERF_VALUE("PositionCache.segmentBytes", sv.length());
 
 	size_t probe = pces.size();	// Out of bounds
 	if ((!pces.empty()) && (sv.length() < 30)) {
@@ -1133,23 +1145,32 @@ void PositionCache::MeasureWidths(Surface *surface, const ViewStyle &vstyle, uns
 			guard.lock();
 		}
 		if (pces[probe].Retrieve(styleNumber, unicode, sv, positions)) {
+			NPP_PERF_COUNT("PositionCache.hit");	// LOCAL CHANGE: performance probe.
 			return;
 		}
 		const size_t probe2 = (hashValue * 37) % pces.size();
 		if (pces[probe2].Retrieve(styleNumber, unicode, sv, positions)) {
+			NPP_PERF_COUNT("PositionCache.hit");	// LOCAL CHANGE: performance probe.
 			return;
 		}
+		NPP_PERF_COUNT("PositionCache.miss");	// LOCAL CHANGE: performance probe.
 		// Not found. Choose the oldest of the two slots to replace
 		if (pces[probe].NewerThan(pces[probe2])) {
 			probe = probe2;
 		}
 	}
 
+	// LOCAL CHANGE: performance probes. Uncacheable = 30 bytes or longer, or
+	// no cache allocated; these always go to the platform layer.
+	NPP_PERF_COUNT_N("PositionCache.uncacheable", probe < pces.size() ? 0 : 1);
 	const Font *fontStyle = style.font.get();
-	if (unicode) {
-		surface->MeasureWidthsUTF8(fontStyle, sv, positions);
-	} else {
-		surface->MeasureWidths(fontStyle, sv, positions);
+	{
+		NPP_PERF_SCOPE_FINE("PositionCache.measure", "bytes=%lu cacheable=%d", static_cast<unsigned long>(sv.length()), probe < pces.size() ? 1 : 0);
+		if (unicode) {
+			surface->MeasureWidthsUTF8(fontStyle, sv, positions);
+		} else {
+			surface->MeasureWidths(fontStyle, sv, positions);
+		}
 	}
 	if (probe < pces.size()) {
 		// Store into cache

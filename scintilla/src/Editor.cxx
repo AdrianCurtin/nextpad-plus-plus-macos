@@ -68,6 +68,9 @@
 #include "EditView.h"
 #include "Editor.h"
 #include "ElapsedPeriod.h"
+// LOCAL CHANGE: performance probes (src/perf/NppPerfProbe.h); inert unless
+// the app turns diagnostics on.
+#include "NppPerfProbe.h"
 
 using namespace Scintilla;
 using namespace Scintilla::Internal;
@@ -252,6 +255,9 @@ void Editor::InvalidateStyleData() noexcept {
 }
 
 void Editor::InvalidateStyleRedraw() {
+	// LOCAL CHANGE: performance probe. Each call re-wraps, clears the layout
+	// and position caches and repaints everything.
+	NPP_PERF_COUNT("Editor.InvalidateStyleRedraw");
 	NeedWrapping();
 	InvalidateStyleData();
 	Redraw();
@@ -259,6 +265,8 @@ void Editor::InvalidateStyleRedraw() {
 
 void Editor::RefreshStyleData() {
 	if (!stylesValid) {
+		// LOCAL CHANGE: performance probe (ViewStyle refresh: fonts, metrics).
+		NPP_PERF_SCOPE("Editor.RefreshStyleData");
 		stylesValid = true;
 		AutoSurface surface(this);
 		if (surface) {
@@ -424,6 +432,9 @@ Sci::Line Editor::LineFromLocation(Point pt) const noexcept {
 
 void Editor::SetTopLine(Sci::Line topLineNew) {
 	if ((topLine != topLineNew) && (topLineNew >= 0)) {
+		// LOCAL CHANGE: performance probes (vertical scroll distance in lines).
+		NPP_PERF_COUNT("Editor.SetTopLine.changed");
+		NPP_PERF_VALUE("Editor.SetTopLine.deltaLines", topLineNew > topLine ? topLineNew - topLine : topLine - topLineNew);
 		topLine = topLineNew;
 		ContainerNeedsUpdate(Update::VScroll);
 	}
@@ -456,6 +467,8 @@ void Editor::RedrawRect(PRectangle rc) {
 		rc.right = rcClient.right;
 
 	if ((rc.bottom > rc.top) && (rc.right > rc.left)) {
+		// LOCAL CHANGE: performance probe.
+		NPP_PERF_COUNT("Editor.RedrawRect");
 		wMain.InvalidateRectangle(rc);
 	}
 }
@@ -469,6 +482,7 @@ void Editor::Redraw() {
 		return;
 	}
 	//Platform::DebugPrintf("Redraw all\n");
+	NPP_PERF_COUNT("Editor.Redraw");	// LOCAL CHANGE: performance probe.
 	const PRectangle rcClient = GetClientRectangle();
 	wMain.InvalidateRectangle(rcClient);
 	if (HasMarginWindow()) {
@@ -983,6 +997,8 @@ void Editor::RememberCurrentSelectionForRedoOntoStack() {
 void Editor::ScrollTo(Sci::Line line, bool moveThumb) {
 	const Sci::Line topLineNew = std::clamp<Sci::Line>(line, 0, MaxScrollPos());
 	if (topLineNew != topLine) {
+		// LOCAL CHANGE: performance probe.
+		NPP_PERF_SCOPE("Editor.ScrollTo", "from=%ld to=%ld moveThumb=%d", static_cast<long>(topLine), static_cast<long>(topLineNew), moveThumb ? 1 : 0);
 		// Try to optimise small scrolls
 #ifndef UNDER_CE
 		const Sci::Line linesToMove = topLine - topLineNew;
@@ -1020,6 +1036,8 @@ void Editor::HorizontalScrollTo(int xPos) {
 	if (xPos < 0)
 		xPos = 0;
 	if (!Wrapping() && (xOffset != xPos)) {
+		// LOCAL CHANGE: performance probe.
+		NPP_PERF_SCOPE("Editor.HorizontalScrollTo", "from=%d to=%d", xOffset, xPos);
 		xOffset = xPos;
 		ContainerNeedsUpdate(Update::HScroll);
 		SetHorizontalScrollPos();
@@ -1554,6 +1572,9 @@ constexpr Sci::Position lengthToMultiThread = 4000;
 bool Editor::WrapBlock(Surface *surface, Sci::Line lineToWrap, Sci::Line lineToWrapEnd) {
 
 	const size_t linesBeingWrapped = static_cast<size_t>(lineToWrapEnd - lineToWrap);
+	// LOCAL CHANGE: performance probe.
+	NPP_PERF_SCOPE("Editor.WrapBlock", "from=%ld to=%ld", static_cast<long>(lineToWrap), static_cast<long>(lineToWrapEnd));
+	NPP_PERF_VALUE("Editor.WrapBlock.lines", linesBeingWrapped);
 
 	std::vector<int> linesAfterWrap(linesBeingWrapped);
 
@@ -1672,10 +1693,14 @@ bool Editor::WrapBlock(Surface *surface, Sci::Line lineToWrap, Sci::Line lineToW
 // wsIdle: wrap one page + 100 lines
 // Return true if wrapping occurred.
 bool Editor::WrapLines(WrapScope ws) {
+	// LOCAL CHANGE: performance probe (ws: 0 all, 1 visible, 2 idle).
+	NPP_PERF_SCOPE_FINE("Editor.WrapLines", "scope=%d", static_cast<int>(ws));
 	Sci::Line goodTopLine = topLine;
 	bool wrapOccurred = false;
 	if (!Wrapping()) {
 		if (wrapWidth != LineLayout::wrapWidthInfinite) {
+			// LOCAL CHANGE: performance probe (one pass over every line).
+			NPP_PERF_SCOPE("Editor.WrapLines.unwrapAll", "lines=%ld", static_cast<long>(pdoc->LinesTotal()));
 			wrapWidth = LineLayout::wrapWidthInfinite;
 			for (Sci::Line lineDoc = 0; lineDoc < pdoc->LinesTotal(); lineDoc++) {
 				int linesWrapped = 1;
@@ -1828,6 +1853,8 @@ void Editor::LinesSplit(int pixelWidth) {
 void Editor::PaintSelMargin(Surface *surfaceWindow, const PRectangle &rc) {
 	if (vs.fixedColumnWidth == 0)
 		return;
+	// LOCAL CHANGE: performance probe.
+	NPP_PERF_SCOPE("Editor.PaintSelMargin", "rect=%.0f,%.0f,%.0f,%.0f", rc.left, rc.top, rc.Width(), rc.Height());
 
 	RefreshStyleData();
 	RefreshPixMaps(surfaceWindow);
@@ -1888,20 +1915,32 @@ void Editor::Paint(Surface *surfaceWindow, PRectangle rcArea) {
 	//Platform::DebugPrintf("Paint:%1d (%3d,%3d) ... (%3d,%3d)\n",
 	//	paintingAllText, rcArea.left, rcArea.top, rcArea.right, rcArea.bottom);
 
+	// LOCAL CHANGE: performance probes for each step of a paint.
+	NPP_PERF_SCOPE("Editor.Paint", "area=%.0f,%.0f,%.0f,%.0f top=%ld allText=%d",
+		rcArea.left, rcArea.top, rcArea.Width(), rcArea.Height(), static_cast<long>(topLine), paintingAllText ? 1 : 0);
+
 	RefreshStyleData();
-	if (paintState == PaintState::abandoned)
+	if (paintState == PaintState::abandoned) {
+		NPP_PERF_EVENT("Editor.Paint.abandoned", "where=styleData");
 		return;	// Scroll bars may have changed so need redraw
+	}
 
 	paintAbandonedByStyling = false;
 
-	StyleAreaBounded(rcArea, false);
+	{
+		NPP_PERF_SCOPE("Editor.Paint.StyleAreaBounded");
+		StyleAreaBounded(rcArea, false);
+	}
 
 	const PRectangle rcClient = GetClientRectangle();
 	//Platform::DebugPrintf("Client: (%3d,%3d) ... (%3d,%3d)   %d\n",
 	//	rcClient.left, rcClient.top, rcClient.right, rcClient.bottom);
 
-	if (NotifyUpdateUI()) {
-		RefreshStyleData();
+	{
+		NPP_PERF_SCOPE("Editor.Paint.NotifyUpdateUI");
+		if (NotifyUpdateUI()) {
+			RefreshStyleData();
+		}
 	}
 
 	// Wrap the visible lines if needed.
@@ -1909,11 +1948,15 @@ void Editor::Paint(Surface *surfaceWindow, PRectangle rcArea) {
 		// The wrapping process has changed the height of some lines so
 		// abandon this paint for a complete repaint.
 		if (AbandonPaint()) {
+			NPP_PERF_EVENT("Editor.Paint.abandoned", "where=wrap");
 			return;
 		}
 	}
 
-	RefreshPixMaps(surfaceWindow);
+	{
+		NPP_PERF_SCOPE("Editor.Paint.RefreshPixMaps");
+		RefreshPixMaps(surfaceWindow);
+	}
 
 	if (!marginView.pixmapSelPattern->Initialised()) {
 		// When Direct2D is used, pixmap creation may fail with D2DERR_RECREATE_TARGET so
@@ -1947,6 +1990,7 @@ void Editor::Paint(Surface *surfaceWindow, PRectangle rcArea) {
 		// Either styling or NotifyUpdateUI noticed that painting is needed
 		// outside the current painting rectangle
 		//Platform::DebugPrintf("Abandoning paint\n");
+		NPP_PERF_EVENT("Editor.Paint.abandoned", "where=beforeText styling=%d", paintAbandonedByStyling ? 1 : 0);	// LOCAL CHANGE
 		if (Wrapping()) {
 			if (paintAbandonedByStyling) {
 				// Styling has spilled over a line end, such as occurs by starting a multiline
@@ -1971,6 +2015,8 @@ void Editor::Paint(Surface *surfaceWindow, PRectangle rcArea) {
 	if (!view.bufferedDraw)
 		surfaceWindow->PopClip();
 
+	// LOCAL CHANGE: performance probe (SCN_PAINTED handlers run synchronously here).
+	NPP_PERF_SCOPE("Editor.Paint.NotifyPainted");
 	NotifyPainted();
 }
 
@@ -2022,6 +2068,7 @@ void Editor::SetVerticalScrollPos() {
 void Editor::ReconfigureScrollBars() {}
 
 void Editor::ChangeScrollBars() {
+	NPP_PERF_SCOPE("Editor.ChangeScrollBars");	// LOCAL CHANGE: performance probe.
 	RefreshStyleData();
 
 	const Sci::Line nMax = MaxScrollPos();
@@ -2051,6 +2098,7 @@ void Editor::SetScrollBars() {
 }
 
 void Editor::ChangeSize() {
+	NPP_PERF_SCOPE("Editor.ChangeSize");	// LOCAL CHANGE: performance probe.
 	DropGraphics();
 	SetScrollBars();
 	if (Wrapping()) {
@@ -2618,6 +2666,8 @@ void Editor::NotifyHotSpotReleaseClick(Sci::Position position, KeyMod modifiers)
 
 bool Editor::NotifyUpdateUI() {
 	if (needUpdateUI != Update::None) {
+		// LOCAL CHANGE: performance probe (all SCN_UPDATEUI handlers run in here).
+		NPP_PERF_SCOPE("Editor.NotifyUpdateUI", "updated=0x%x", static_cast<unsigned>(needUpdateUI));
 		NotificationData scn = {};
 		scn.nmhdr.code = Notification::UpdateUI;
 		scn.updated = needUpdateUI;
@@ -2778,6 +2828,8 @@ constexpr Sci::Position MovePositionForDeletion(Sci::Position position, Sci::Pos
 }
 
 void Editor::NotifyModified(Document *, DocModification mh, void *) {
+	// LOCAL CHANGE: performance probe (document change bookkeeping plus SCN_MODIFIED handlers).
+	NPP_PERF_SCOPE_FINE("Editor.NotifyModified", "type=0x%x len=%ld", static_cast<unsigned>(mh.modificationType), static_cast<long>(mh.length));
 	ContainerNeedsUpdate(Update::Content);
 	if (paintState == PaintState::painting) {
 		CheckForChangeOutsidePaint(Range(mh.position, mh.position + mh.length));
@@ -5257,6 +5309,8 @@ void Editor::ButtonUpWithModifiers(Point pt, unsigned int curTime, KeyMod modifi
 }
 
 bool Editor::Idle() {
+	// LOCAL CHANGE: performance probe.
+	NPP_PERF_SCOPE("Editor.Idle", "wrapPending=%d idleStyling=%d", wrapPending.NeedsWrap() ? 1 : 0, needIdleStyling ? 1 : 0);
 	NotifyUpdateUI();
 
 	bool needWrap = Wrapping() && wrapPending.NeedsWrap();
@@ -5375,6 +5429,7 @@ Sci::Position Editor::PositionAfterArea(PRectangle rcArea) const {
 // Style to a position within the view. If this causes a change at end of last line then
 // affects later lines so style all the viewed text.
 void Editor::StyleToPositionInView(Sci::Position pos) {
+	NPP_PERF_SCOPE_FINE("Editor.StyleToPositionInView", "pos=%ld", static_cast<long>(pos));	// LOCAL CHANGE: performance probe.
 	Sci::Position endWindow = PositionAfterArea(GetClientDrawingRectangle());
 	if (pos > endWindow)
 		pos = endWindow;
@@ -5428,6 +5483,8 @@ void Editor::StartIdleStyling(bool truncatedLastStyling) {
 void Editor::StyleAreaBounded(PRectangle rcArea, bool scrolling) {
 	const Sci::Position posAfterArea = PositionAfterArea(rcArea);
 	const Sci::Position posAfterMax = PositionAfterMaxStyling(posAfterArea, scrolling);
+	// LOCAL CHANGE: performance probe (truncated = styling left for idle time).
+	NPP_PERF_COUNT_N("Editor.StyleAreaBounded.truncated", posAfterMax < posAfterArea ? 1 : 0);
 	if (posAfterMax < posAfterArea) {
 		// Idle styling may be performed before current visible area
 		// Style a bit now then style further in idle time
@@ -5440,6 +5497,7 @@ void Editor::StyleAreaBounded(PRectangle rcArea, bool scrolling) {
 }
 
 void Editor::IdleStyle() {
+	NPP_PERF_SCOPE("Editor.IdleStyle");	// LOCAL CHANGE: performance probe.
 	const Sci::Position posAfterArea = PositionAfterArea(GetClientRectangle());
 	const Sci::Position endGoal = (idleStyling >= IdleStyling::AfterVisible) ?
 		pdoc->Length() : posAfterArea;
@@ -5451,6 +5509,7 @@ void Editor::IdleStyle() {
 }
 
 void Editor::IdleWork() {
+	NPP_PERF_SCOPE("Editor.IdleWork", "items=%d", static_cast<int>(workNeeded.items));	// LOCAL CHANGE: performance probe.
 	// Style the line after the modification as this allows modifications that change just the
 	// line of the modification to heal instead of propagating to the rest of the window.
 	if (FlagSet(workNeeded.items, WorkItems::style)) {
@@ -8129,6 +8188,8 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 			vs.indicators[wParam].sacHover.style = static_cast<IndicatorStyle>(lParam);
 			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
 				InvalidateStyleRedraw();
+			else
+				NPP_PERF_COUNT("Editor.IndicSet.unchanged");
 		}
 		break;
 
@@ -8143,6 +8204,8 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 			vs.indicators[wParam].sacHover.fore = ColourRGBA::FromIpRGB(lParam);
 			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
 				InvalidateStyleRedraw();
+			else
+				NPP_PERF_COUNT("Editor.IndicSet.unchanged");
 		}
 		break;
 
@@ -8156,6 +8219,8 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 			vs.indicators[wParam].sacHover.style = static_cast<IndicatorStyle>(lParam);
 			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
 				InvalidateStyleRedraw();
+			else
+				NPP_PERF_COUNT("Editor.IndicSet.unchanged");
 		}
 		break;
 
@@ -8169,6 +8234,8 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 			vs.indicators[wParam].sacHover.fore = ColourRGBA::FromIpRGB(lParam);
 			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
 				InvalidateStyleRedraw();
+			else
+				NPP_PERF_COUNT("Editor.IndicSet.unchanged");
 		}
 		break;
 
@@ -8182,6 +8249,8 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 			vs.indicators[wParam].SetFlags(static_cast<IndicFlag>(lParam));
 			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
 				InvalidateStyleRedraw();
+			else
+				NPP_PERF_COUNT("Editor.IndicSet.unchanged");
 		}
 		break;
 
@@ -8195,6 +8264,8 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 			vs.indicators[wParam].under = lParam != 0;
 			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
 				InvalidateStyleRedraw();
+			else
+				NPP_PERF_COUNT("Editor.IndicSet.unchanged");
 		}
 		break;
 
@@ -8208,6 +8279,8 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 			vs.indicators[wParam].fillAlpha = static_cast<int>(lParam);
 			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
 				InvalidateStyleRedraw();
+			else
+				NPP_PERF_COUNT("Editor.IndicSet.unchanged");
 		}
 		break;
 
@@ -8221,6 +8294,8 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 			vs.indicators[wParam].outlineAlpha = static_cast<int>(lParam);
 			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
 				InvalidateStyleRedraw();
+			else
+				NPP_PERF_COUNT("Editor.IndicSet.unchanged");
 		}
 		break;
 
@@ -8233,6 +8308,8 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 			vs.indicators[wParam].strokeWidth = static_cast<XYPOSITION>(lParam) / 100.0;
 			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
 				InvalidateStyleRedraw();
+			else
+				NPP_PERF_COUNT("Editor.IndicSet.unchanged");
 		}
 		break;
 
