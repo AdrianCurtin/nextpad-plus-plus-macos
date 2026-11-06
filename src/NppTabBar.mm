@@ -700,6 +700,13 @@ static CGFloat tabShrinkFloor(_NppTabItem *item) {
 
 - (void)setTitle:(NSString *)title modified:(BOOL)modified atIndex:(NSInteger)index {
     if (index < 0 || index >= (NSInteger)_items.count) return;
+    // Called for every SCN_UPDATEUI (each scroll frame) through
+    // -[MainWindowController refreshTabsForEditor:]; repaint only on a change.
+    _NppTabItem *item = _items[index];
+    if (item.isModified == modified &&
+        (item.title == title || [item.title isEqualToString:title])) {
+        return;
+    }
     _items[index].title      = title;
     _items[index].isModified = modified;
     [_items[index] setNeedsDisplay:YES];
