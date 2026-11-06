@@ -98,6 +98,61 @@ inline CGRect CGRectFromPRectangleInset(PRectangle rc, XYPOSITION strokeWidth) {
 	return CGRectInset(rect, halfStroke, halfStroke);
 }
 
+//----------------- Text colour ------------------------------------------------------------------
+
+// LOCAL CHANGE: cached text colours.
+namespace {
+
+// Text colours as generic RGB CGColors, the colour space CGColorCreateGenericRGB
+// has always given text here, so colours look the same. Kept in a small
+// direct-mapped cache per thread instead of creating and releasing one CGColor
+// for every text run drawn; a paint uses only a few distinct text colours.
+class GenericColourCache {
+	struct Entry {
+		int key = 0;
+		CGColorRef colour = nullptr;
+	};
+	static constexpr size_t size = 64;
+	Entry entries[size];
+public:
+	GenericColourCache() = default;
+	GenericColourCache(const GenericColourCache &) = delete;
+	GenericColourCache &operator=(const GenericColourCache &) = delete;
+	~GenericColourCache() {
+		for (Entry &entry : entries) {
+			if (entry.colour) {
+				CGColorRelease(entry.colour);
+			}
+		}
+	}
+	CGColorRef Get(ColourRGBA colour) {
+		const int key = colour.AsInteger();
+		// Multiplicative hash; the top 6 bits index the 64 entries.
+		Entry &entry = entries[(static_cast<uint32_t>(key) * 2654435761u) >> 26];
+		if (entry.colour && entry.key == key) {
+			return entry.colour;
+		}
+		CGColorRef created = CGColorCreateGenericRGB(colour.GetRedComponent(),
+							     colour.GetGreenComponent(),
+							     colour.GetBlueComponent(),
+							     colour.GetAlphaComponent());
+		if (entry.colour) {
+			CGColorRelease(entry.colour);
+		}
+		entry.key = key;
+		entry.colour = created;
+		return created;
+	}
+};
+
+// The returned colour belongs to the cache: retain it to keep it past the next call.
+CGColorRef GenericColour(ColourRGBA colour) {
+	thread_local GenericColourCache cache;
+	return cache.Get(colour);
+}
+
+}
+
 //----------------- FontQuartz ---------------------------------------------------------------------
 
 class FontQuartz : public Font {
@@ -1255,14 +1310,9 @@ void SurfaceImpl::DrawTextTransparent(PRectangle rc, const Font *font_, XYPOSITI
 	}
 	CFStringEncoding encoding = EncodingFromCharacterSet(UnicodeMode(), style->getCharacterSet());
 
-	CGColorRef color = CGColorCreateGenericRGB(fore.GetRedComponent(),
-						   fore.GetGreenComponent(),
-						   fore.GetBlueComponent(),
-						   fore.GetAlphaComponent());
+	CGColorRef color = GenericColour(fore);	// LOCAL CHANGE: cached text colour.
 
 	style->setCTStyleColour(color);
-
-	CGColorRelease(color);
 
 	QuartzTextLayout layoutDraw(text, encoding, style);
 	layoutDraw.draw(gc, rc.left, ybase);
@@ -1372,14 +1422,9 @@ void SurfaceImpl::DrawTextTransparentUTF8(PRectangle rc, const Font *font_, XYPO
 	}
 	const CFStringEncoding encoding = kCFStringEncodingUTF8;
 
-	CGColorRef color = CGColorCreateGenericRGB(fore.GetRedComponent(),
-						   fore.GetGreenComponent(),
-						   fore.GetBlueComponent(),
-						   fore.GetAlphaComponent());
+	CGColorRef color = GenericColour(fore);	// LOCAL CHANGE: cached text colour.
 
 	style->setCTStyleColour(color);
-
-	CGColorRelease(color);
 
 	QuartzTextLayout layoutDraw(text, encoding, style);
 	layoutDraw.draw(gc, rc.left, ybase);
