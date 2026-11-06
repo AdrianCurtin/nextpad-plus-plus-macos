@@ -22,6 +22,7 @@
 #import "Scintilla.h"
 #import "ScintillaMessages.h"
 #import "NppScintillaIDs.h"
+#import "NppClickableLinks.h"
 #include "SciLexer.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <vector>
@@ -4037,31 +4038,6 @@ static const int kHistoryMask = (1 << SC_MARKNUM_HISTORY_MODIFIED);
 
 #pragma mark - Clickable Links (issue #133)
 
-// Compiles a regex matching any of the user's custom URI schemes followed by a
-// run of URL characters. Cached on the schemes string (a global pref) so we
-// don't recompile on every scroll. Main-thread only (all callers are UI).
-static NSRegularExpression *nppClickableSchemeRegex(NSString *schemes) {
-    static NSString *cachedSrc = nil;
-    static NSRegularExpression *cachedRegex = nil;
-    if (cachedSrc && [schemes isEqualToString:cachedSrc]) return cachedRegex;
-    cachedSrc = [schemes copy];
-    cachedRegex = nil;
-    NSArray *tokens = [schemes componentsSeparatedByCharactersInSet:
-                       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    NSMutableArray *escaped = [NSMutableArray array];
-    for (NSString *t in tokens)
-        if (t.length) [escaped addObject:[NSRegularExpression escapedPatternForString:t]];
-    if (escaped.count) {
-        // Scheme alternation followed by one+ non-space, non-markup chars.
-        NSString *pattern = [NSString stringWithFormat:@"(?:%@)[^\\s<>\"'`]+",
-                             [escaped componentsJoinedByString:@"|"]];
-        cachedRegex = [NSRegularExpression regularExpressionWithPattern:pattern
-                                                               options:NSRegularExpressionCaseInsensitive
-                                                                 error:nil];
-    }
-    return cachedRegex;
-}
-
 // Sets the slot-19 indicator appearance from the current prefs. INDIC_TEXTFORE
 // colors the link text without an underline ("No underline" mode); INDIC_PLAIN
 // draws an underline. Fullbox mode draws a filled box on hover.
@@ -4125,8 +4101,10 @@ static NSRegularExpression *nppClickableSchemeRegex(NSString *schemes) {
     if (![ud boolForKey:kPrefClickableLinkEnable]) return;
     if (_largeFileMode && ![ud boolForKey:kPrefLargeFileAllowURLClick]) return;
 
-    // Extract visible text. Line boundaries are valid UTF-8 char boundaries,
-    // so the byte range decodes cleanly.
+    // Extract the visible text and mark the links in it. Detection runs line
+    // by line (see NppClickableLinks.h): NSDataDetector can stop reporting
+    // links for the rest of a string after some text, so one pass over the
+    // whole screen could leave every later line unmarked.
     sptr_t len = endPos - startPos;
     char *buf = (char *)malloc((size_t)len + 1);
     if (!buf) return;
@@ -4135,56 +4113,12 @@ static NSRegularExpression *nppClickableSchemeRegex(NSString *schemes) {
     tr.chrg.cpMax = (Sci_Position)endPos;
     tr.lpstrText  = buf;
     [sci message:SCI_GETTEXTRANGEFULL wParam:0 lParam:(sptr_t)&tr];
-    NSString *text = [[NSString alloc] initWithBytes:buf length:(NSUInteger)len
-                                            encoding:NSUTF8StringEncoding];
-    free(buf);
-    if (!text.length) return;
-
-    // Map an NSString (UTF-16) sub-range to absolute document byte offsets and
-    // fill the indicator there.
-    void (^fillRange)(NSRange) = ^(NSRange r) {
-        if (r.length == 0) return;
-        NSUInteger byteStart = [[text substringToIndex:r.location]
-                                lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
-        NSUInteger byteLen = [[text substringWithRange:r]
-                              lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
-        if (byteLen == 0) return;
+    NSString *schemes = [ud stringForKey:kPrefClickableLinkSchemes] ?: @"";
+    NppFindClickableLinks(buf, (size_t)len, schemes, ^(size_t start, size_t length) {
         [sci message:SCI_INDICATORFILLRANGE
-                wParam:(uptr_t)(startPos + byteStart) lParam:(sptr_t)byteLen];
-    };
-
-    NSRange whole = NSMakeRange(0, text.length);
-
-    // 1) Standard web/mail links (http, https, ftp, mailto, bare www, …).
-    static NSDataDetector *detector = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        detector = [NSDataDetector dataDetectorWithTypes:NSTextCheckingTypeLink error:nil];
-    });
-    [detector enumerateMatchesInString:text options:0 range:whole
-                            usingBlock:^(NSTextCheckingResult *m, NSMatchingFlags flags, BOOL *stop) {
-        if (m.resultType == NSTextCheckingTypeLink && m.URL) fillRange(m.range);
-    }];
-
-    // 2) Custom URI schemes from prefs (svn://, git://, …) the detector misses.
-    NSRegularExpression *schemeRegex =
-        nppClickableSchemeRegex([ud stringForKey:kPrefClickableLinkSchemes] ?: @"");
-    if (schemeRegex) {
-        static NSCharacterSet *trailTrim = nil;
-        static dispatch_once_t trimOnce;
-        dispatch_once(&trimOnce, ^{
-            trailTrim = [NSCharacterSet characterSetWithCharactersInString:@".,;:!?)]}>'\""];
-        });
-        [schemeRegex enumerateMatchesInString:text options:0 range:whole
-                                   usingBlock:^(NSTextCheckingResult *m, NSMatchingFlags flags, BOOL *stop) {
-            NSRange r = m.range;
-            // Trim trailing sentence/markup punctuation that isn't part of the URL.
-            while (r.length > 0 &&
-                   [trailTrim characterIsMember:[text characterAtIndex:r.location + r.length - 1]])
-                r.length--;
-            fillRange(r);
-        }];
-    }
+                wParam:(uptr_t)(startPos + (sptr_t)start) lParam:(sptr_t)length];
+    }, NULL);
+    free(buf);
 }
 
 // Opens the clicked link if the double-click landed on a clickable-link
