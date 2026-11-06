@@ -164,9 +164,21 @@ static void testOffsets() {
     check("offsets: UTF-8 byte ranges, CRLF and CR line ends, scheme trim", got == want, join(got));
 }
 
+static void testNumericSkip() {
+    std::string text = "1.2345\t6.789\t-0.5\n+1,2;3:4 5\n\n12 www.example.com\n";
+    NppLinkScanStats st = {0, 0, 0, 0};
+    Ranges r = scan(text, @"svn://", &st);
+    check("numeric: numeric lines skipped", st.numericLines == 2 && st.detectedLines == 1 && st.lines == 3,
+          "numeric " + std::to_string(st.numericLines) + " detected " + std::to_string(st.detectedLines));
+    check("numeric: link on a mixed line found", linkTexts(text, r) == std::vector<std::string>{"www.example.com"});
+    NppLinkScanStats st2 = {0, 0, 0, 0};
+    scan(text, @"svn:// 12:", &st2);
+    check("numeric: skip off for a numeric-only scheme", st2.numericLines == 0 && st2.detectedLines == 3);
+}
+
 static void testInvalidUTF8() {
     std::string text = "bad \xFF\xFE http://a.b/c\nhttp://d.e/f\n";
-    NppLinkScanStats st = {0, 0, 0};
+    NppLinkScanStats st = {0, 0, 0, 0};
     Ranges r = scan(text, @"", &st);
     check("invalid UTF-8: only that line is skipped",
           st.invalidLines == 1 && linkTexts(text, r) == std::vector<std::string>{"http://d.e/f"},
@@ -178,6 +190,7 @@ int main() {
         testPoisonDoesNotHideLaterLines();
         testBlocksEqualPerLine();
         testOffsets();
+        testNumericSkip();
         testInvalidUTF8();
     }
     printf("%s\n", g_fail ? "FAILED" : "ALL PASSED");

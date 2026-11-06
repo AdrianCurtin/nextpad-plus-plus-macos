@@ -28,6 +28,30 @@ static NSRegularExpression *nppClickableSchemeRegex(NSString *schemes) {
     return cachedRegex;
 }
 
+static inline bool nppIsNumericByte(unsigned char c) {
+    return (c >= '0' && c <= '9') || c == ' ' || c == '\t' || c == '\r' || c == '\n' ||
+           c == '.' || c == ',' || c == ';' || c == ':' || c == '+' || c == '-';
+}
+
+// YES when some custom scheme consists only of numeric-text bytes and so
+// could match numeric text (never the case for real URI schemes).
+static BOOL nppSchemesMatchNumericText(NSString *schemes) {
+    static NSString *cachedSrc = nil;
+    static BOOL cachedResult = NO;
+    if (cachedSrc && [schemes isEqualToString:cachedSrc]) return cachedResult;
+    cachedSrc = [schemes copy];
+    cachedResult = NO;
+    for (NSString *t in [schemes componentsSeparatedByCharactersInSet:
+                         [NSCharacterSet whitespaceAndNewlineCharacterSet]]) {
+        if (!t.length) continue;
+        BOOL numericOnly = YES;
+        for (const char *p = t.UTF8String; *p; p++)
+            if (!nppIsNumericByte((unsigned char)*p)) { numericOnly = NO; break; }
+        if (numericOnly) { cachedResult = YES; break; }
+    }
+    return cachedResult;
+}
+
 // UTF-8 length of the UTF-16 range [0, location) of `s`.
 static size_t nppUTF8Offset(NSString *s, NSUInteger location) {
     if (location == 0) return 0;
@@ -40,7 +64,7 @@ static size_t nppUTF8Offset(NSString *s, NSUInteger location) {
 void NppFindClickableLinks(const char *buf, size_t len, NSString *schemes,
                            void (^found)(size_t start, size_t length),
                            NppLinkScanStats *stats) {
-    NppLinkScanStats local = {0, 0, 0};
+    NppLinkScanStats local = {0, 0, 0, 0};
     NppLinkScanStats *st = stats ? stats : &local;
 
     static NSDataDetector *detector = nil;
@@ -53,6 +77,7 @@ void NppFindClickableLinks(const char *buf, size_t len, NSString *schemes,
     });
     // Custom URI schemes from prefs (svn://, git://, ...) the detector misses.
     NSRegularExpression *schemeRegex = nppClickableSchemeRegex(schemes);
+    const BOOL schemesMatchNumeric = nppSchemesMatchNumericText(schemes);
 
     size_t pos = 0;
     while (pos < len) {
@@ -71,6 +96,13 @@ void NppFindClickableLinks(const char *buf, size_t len, NSString *schemes,
         st->lines++;
 
         const char *line = buf + lineStart;
+        if (ascii && !schemesMatchNumeric) {
+            bool numeric = true;
+            for (size_t i = 0; i < lineLen && numeric; i++)
+                numeric = nppIsNumericByte((unsigned char)line[i]);
+            if (numeric) { st->numericLines++; continue; }
+        }
+
         @autoreleasepool {
             NSString *text = [[NSString alloc] initWithBytes:line length:lineLen
                                                     encoding:NSUTF8StringEncoding];
