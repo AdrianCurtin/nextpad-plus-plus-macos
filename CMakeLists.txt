@@ -540,7 +540,7 @@ set_source_files_properties(${APP_SRCS} PROPERTIES
 #                         (src/NppClickableLinks.mm): a block of lines gives the
 #                         same links as each line scanned alone, also after text
 #                         that stops NSDataDetector; byte offsets, line ends,
-#                         invalid UTF-8. Foundation only
+#                         numeric-line skip. Foundation only
 #   regex_run_sh,         the standalone harness scripts (regex/test/run.sh and
 #   regex_run_boost_sh    run_boost.sh), which build their own copy with clang++;
 #                         label "standalone" (ctest -LE standalone skips them)
