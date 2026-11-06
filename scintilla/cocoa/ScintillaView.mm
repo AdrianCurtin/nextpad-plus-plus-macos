@@ -102,7 +102,30 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 	}
 }
 
+// Add marginWidth and owner properties as a private category.
+@interface SCIMarginView()
+@property(assign) int marginWidth;
+@property(nonatomic, weak) ScintillaView *owner;
+// LOCAL CHANGE: set while NSScrollView reflects a clip view scroll (see
+// -[SCIMarginView setNeedsDisplayInRect:]).
+@property(nonatomic) BOOL reflectingScroll;
+@end
+
 @implementation SCIScrollView
+
+/**
+ * LOCAL CHANGE: NSScrollView invalidates the whole vertical ruler on every
+ * scroll, horizontal ones included. Flag the margin while it does so that the
+ * margin can drop the request when its vertical position has not changed.
+ */
+- (void) reflectScrolledClipView: (NSClipView *) cView {
+	SCIMarginView *margin = [self.verticalRulerView isKindOfClass: [SCIMarginView class]] ?
+		static_cast<SCIMarginView *>(self.verticalRulerView) : nil;
+	margin.reflectingScroll = YES;
+	[super reflectScrolledClipView: cView];
+	margin.reflectingScroll = NO;
+}
+
 - (void) tile {
 	[super tile];
 
@@ -131,16 +154,13 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 }
 @end
 
-// Add marginWidth and owner properties as a private category.
-@interface SCIMarginView()
-@property(assign) int marginWidth;
-@property(nonatomic, weak) ScintillaView *owner;
-@end
-
 @implementation SCIMarginView {
 	int marginWidth;
 	ScintillaView *__weak owner;
 	NSMutableArray *currentCursors;
+	// LOCAL CHANGE: clip view bounds at the last margin paint.
+	BOOL mPainted;
+	NSRect mPaintedClipBounds;
 }
 
 @synthesize marginWidth, owner;
@@ -263,7 +283,29 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 	}
 }
 
+/**
+ * LOCAL CHANGE: the margin shows the lines from the clip view's vertical
+ * position down, so a scroll that leaves that position and the clip height
+ * unchanged (a horizontal scroll) does not change it. Drop the full-margin
+ * invalidation NSScrollView sends for such a scroll; it repainted every line
+ * number on every horizontal scroll step. Invalidations from Scintilla
+ * (markers, folds, styles, Redraw) and from AppKit outside a scroll are kept.
+ */
+- (void) setNeedsDisplayInRect: (NSRect) invalidRect {
+	if (_reflectingScroll && mPainted) {
+		const NSRect clip = self.scrollView.contentView.bounds;
+		if (clip.origin.y == mPaintedClipBounds.origin.y &&
+		    clip.size.height == mPaintedClipBounds.size.height) {
+			return;
+		}
+	}
+	[super setNeedsDisplayInRect: invalidRect];
+}
+
 - (void) drawRect: (NSRect) rect {
+	// LOCAL CHANGE: remember the vertical position this paint shows.
+	mPainted = YES;
+	mPaintedClipBounds = self.scrollView.contentView.bounds;
 	if (!NSContainsRect(self.bounds, rect)) {
 	    rect = self.bounds;
 	}
