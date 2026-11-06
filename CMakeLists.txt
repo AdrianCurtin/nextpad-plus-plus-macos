@@ -50,13 +50,20 @@ set(SCI_DEFINITIONS
     BOOST_HAS_THREADS=  # Boost.Regex traits cache locking; see BoostRegExSearch.cxx
 )
 
+# Performance probes (src/perf/NppPerfProbe.h): one aggregator shared by the
+# Scintilla core, the Cocoa layer and the app. Inert unless the app enables
+# diagnostics (NPP_PERF=1 or the NPPPerfDiagnostics default); see
+# tests/perf/README.md.
+set(NPP_PERF_PROBE_SRCS "${CMAKE_SOURCE_DIR}/src/perf/NppPerfProbe.cxx")
+
 # Platform-agnostic core + regex engine: no Cocoa, so the headless tests link it.
 # Platform::DebugPrintf/Assert come from PlatCocoa.mm in the app and from
 # tests/PlatformStubs.cxx in the tests.
-add_library(scintilla_core STATIC ${SCI_CORE_SRCS} ${NPP_REGEX_SRCS})
+add_library(scintilla_core STATIC ${SCI_CORE_SRCS} ${NPP_REGEX_SRCS} ${NPP_PERF_PROBE_SRCS})
 target_include_directories(scintilla_core PUBLIC
     "${SCI_ROOT}/include"
     "${SCI_ROOT}/src"
+    "${CMAKE_SOURCE_DIR}/src/perf"
 )
 target_include_directories(scintilla_core PRIVATE
     # contains boost/ — boost headers self-include as <boost/...>, so the root
@@ -158,6 +165,8 @@ set(APP_SRCS
     src/PluginsAdminWindowController.mm
     src/NppBuiltinLanguages.mm
     src/NppKeywordSlots.mm
+    src/NppPerfDiagnostics.mm
+    src/NppPerfBench.mm
 )
 
 set(APP_HEADERS
@@ -204,9 +213,24 @@ set(APP_HEADERS
     src/PluginsAdminWindowController.h
     src/NppBuiltinLanguages.h
     src/NppKeywordSlots.h
+    src/NppPerfDiagnostics.h
+    src/NppPerfBench.h
+    src/perf/NppPerfProbe.h
 )
 
 add_executable(NotepadPlusPlusMac MACOSX_BUNDLE ${APP_SRCS} ${APP_HEADERS})
+
+# Build identity (commit, branch, dirty flag, build type) for the performance
+# report. Regenerated on every build; the header changes only with the commit.
+set(NPP_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
+add_custom_target(npp_build_info
+    COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR}
+            -DOUT=${NPP_GENERATED_DIR}/NppBuildInfo.h
+            -DBUILD_TYPE=${CMAKE_BUILD_TYPE}
+            -P ${CMAKE_SOURCE_DIR}/cmake/NppBuildInfo.cmake
+    BYPRODUCTS ${NPP_GENERATED_DIR}/NppBuildInfo.h
+    COMMENT "Updating build identity header")
+add_dependencies(NotepadPlusPlusMac npp_build_info)
 
 # Copy icons at BUILD time so updated PNGs are picked up on every make.
 # IMPORTANT: rsync -a (not `cmake -E copy_directory`) — copy_directory does NOT
@@ -494,6 +518,7 @@ set_target_properties(NotepadPlusPlusMac PROPERTIES
 
 target_include_directories(NotepadPlusPlusMac PRIVATE
     src
+    "${NPP_GENERATED_DIR}"
     "${SCI_ROOT}/include"
     "${SCI_ROOT}/cocoa"
     "${LEX_ROOT}/include"
@@ -504,6 +529,7 @@ target_link_libraries(NotepadPlusPlusMac PRIVATE
     lexilla
     "-framework Cocoa"
     "-framework QuartzCore"
+    "-framework CoreVideo"
     "-framework UniformTypeIdentifiers"
 )
 

@@ -13,6 +13,8 @@
 #import "NppLangsManager.h"
 #import "EditorView.h"
 #import "ShortcutMapperWindowController.h"
+#import "NppPerfDiagnostics.h"
+#import "NppPerfBench.h"
 
 // Files opened from a folder beyond this count trigger a confirmation.
 static const NSUInteger kFolderOpenConfirmThreshold = 20;
@@ -99,6 +101,9 @@ static void NppRecoveryDone(void) {
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    // Performance diagnostics (no-ops unless enabled, see NppPerfDiagnostics.h).
+    NppPerfMark(@"launch.begin");
+    NPP_PERF_SCOPE("AppDelegate.didFinishLaunching");
     // Disable the macOS press-and-hold accent picker so key repeat works in the editor.
     [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"ApplePressAndHoldEnabled"];
 
@@ -234,6 +239,7 @@ static void NppRecoveryDone(void) {
         [self.mainWindowController loadSessionFromPath:cli.sessionFile];
         hasContent = YES;
     } else if (cli.filePaths.count > 0) {
+        NPP_PERF_SCOPE("AppDelegate.openFilesFromCLI", "count=%lu", (unsigned long)cli.filePaths.count);
         [self _openFilesFromCLI:cli inController:self.mainWindowController];
         hasContent = YES;
     } else if (!cli.noSession &&
@@ -368,10 +374,23 @@ static void NppRecoveryDone(void) {
     });
 
     // ── Background update check (non-blocking, after 5 second delay) ────
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        [self checkForUpdateUserInitiated:NO];
-    });
+    // Skipped under the performance benchmark: no network traffic or menu
+    // changes during a measured run.
+    if (!NppPerfBenchActive()) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [self checkForUpdateUserInitiated:NO];
+        });
+    }
+
+    // ── Performance diagnostics: live HUD and the benchmark driver ──────
+    NppPerfMark(@"launch.end");
+    if (NppPerfEnabled() || NppPerfBenchActive()) {
+        EditorView *ed = [self.mainWindowController currentEditor];
+        [NppPerfHUD attachToWindowIfRequested:self.mainWindowController.window
+                                         view:(ed.scintillaView.content ?: self.mainWindowController.window.contentView)];
+        [NppPerfBench startIfRequestedWithController:self.mainWindowController];
+    }
 }
 
 // ── New Window ──────────────────────────────────────────────────────────────

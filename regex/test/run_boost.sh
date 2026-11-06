@@ -22,10 +22,10 @@ for s in "${core[@]}"; do srcs+=("$sci/src/$s.cxx"); done
 
 clang++ -std=c++17 -stdlib=libc++ \
     -DSCI_NAMESPACE -DSCI_OWNREGEX -DSCINTILLA_QT=0 -DBOOST_REGEX_STANDALONE -DBOOST_HAS_THREADS= \
-    -I"$sci/include" -I"$sci/src" -I"$root/regex" \
+    -I"$sci/include" -I"$sci/src" -I"$root/regex" -I"$root/src/perf" \
     "$here/test_boost_regex.cxx" \
     "$root/regex/BoostRegExSearch.cxx" "$root/regex/UTF8DocumentIterator.cxx" \
-    "${srcs[@]}" \
+    "${srcs[@]}" "$root/src/perf/NppPerfProbe.cxx" \
     -o "$out/test_boost_regex"
 
 "$out/test_boost_regex"

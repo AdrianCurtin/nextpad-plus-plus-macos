@@ -2,6 +2,7 @@
 #import "NppApplication.h"
 #import "AppDelegate.h"
 #import "NppCommandLineParams.h"
+#import "NppPerfDiagnostics.h"
 
 static void printHelp(const char *progName) {
     fprintf(stdout,
@@ -43,6 +44,10 @@ static void printHelp(const char *progName) {
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        // Performance diagnostics: NPP_PERF / NPPPerfDiagnostics / NPP_PERF_HUD /
+        // NPP_PERF_BENCH. No-op unless one of them is set.
+        NppPerfBootstrap();
+
         // Parse command line arguments before NSApplication starts
         NppCommandLineParams *cliParams = [[NppCommandLineParams alloc] initWithArgc:argc argv:argv];
 
