@@ -1677,6 +1677,33 @@ void DrawBackground(Surface *surface, const EditModel &model, const ViewStyle &v
 
 	const bool drawWhitespaceBackground = vsDraw.WhitespaceBackgroundDrawn() && !background;
 
+	// LOCAL CHANGE: coalesce the backgrounds of adjacent segments that have the
+	// same colour into one fill. A tab-separated line of numbers breaks into
+	// about 75 segments, so a full paint issued about 2,100 fills where about
+	// 60 cover the same pixels. Abutting segments share the exact edge value
+	// and FillRectangleAligned rounds each edge independently, so the union
+	// fills the same device pixels as the separate fills did.
+	PRectangle rcPending;
+	ColourRGBA backPending;
+	bool fillPending = false;
+	auto flushFill = [&]() {
+		if (fillPending) {
+			surface->FillRectangleAligned(rcPending, Fill(backPending));
+			fillPending = false;
+		}
+	};
+	auto fillSegment = [&](PRectangle rc, ColourRGBA back) {
+		if (fillPending && (back == backPending) && (rc.left == rcPending.right) &&
+			(rc.top == rcPending.top) && (rc.bottom == rcPending.bottom)) {
+			rcPending.right = rc.right;
+			return;
+		}
+		flushFill();
+		rcPending = rc;
+		backPending = back;
+		fillPending = true;
+	};
+
 	// Background drawing loop
 	while (bfBack.More()) {
 
@@ -1706,11 +1733,12 @@ void DrawBackground(Surface *surface, const EditModel &model, const ViewStyle &v
 					// Blob display
 					inIndentation = false;
 				}
-				surface->FillRectangleAligned(rcSegment, Fill(textBack));
+				fillSegment(rcSegment, textBack);	// LOCAL CHANGE: coalesced fill.
 			} else {
 				// Normal text display
-				surface->FillRectangleAligned(rcSegment, Fill(textBack));
+				fillSegment(rcSegment, textBack);	// LOCAL CHANGE: coalesced fill.
 				if (vsDraw.viewWhitespace != WhiteSpace::Invisible) {
+					flushFill();	// LOCAL CHANGE: space backgrounds draw over the segment fill.
 					for (int cpos = 0; cpos <= i - ts.start; cpos++) {
 						if (ll->chars[cpos + ts.start] == ' ') {
 							if (drawWhitespaceBackground && vsDraw.WhiteSpaceVisible(inIndentation)) {
@@ -1729,6 +1757,7 @@ void DrawBackground(Surface *surface, const EditModel &model, const ViewStyle &v
 			break;
 		}
 	}
+	flushFill();	// LOCAL CHANGE: coalesced fill.
 }
 
 void DrawEdgeLine(Surface *surface, const ViewStyle &vsDraw, const LineLayout *ll,
@@ -2146,9 +2175,80 @@ void EditView::DrawForeground(Surface *surface, const EditModel &model, const Vi
 		? BreakFinder::BreakFor::ForegroundAndSelection : BreakFinder::BreakFor::Foreground;
 	BreakFinder bfFore(ll, &model.sel, lineRange, posLineStart, xStartVisible, breakFor, model.pdoc, model.reprs.get(), &vsDraw);
 
-	while (bfFore.More()) {
+	// LOCAL CHANGE: draw a run of same-style ASCII text segments separated by
+	// tabs as one string, with each tab replaced by the spaces that fill it.
+	// A tab-separated line of numbers otherwise costs one CoreText line per
+	// field (about 37 per line, 2,000 per full paint). This applies only where
+	// the result is the same: the font passed the monospace check (so every
+	// glyph of the run sits at a multiple of the character width from the run
+	// start, which is checked against the layout positions), the tabs draw
+	// nothing (whitespace invisible, no indentation guide, no underline, two
+	// phase drawing) and every segment of the run gets the same colour
+	// (text-colour indicators agree, no hotspot, no selection foreground).
+	// Segments read ahead wait in pendingSegments.
+	std::vector<TextSegment> pendingSegments;
+	auto peekSegment = [&](size_t k) -> const TextSegment * {
+		while ((pendingSegments.size() <= k) && bfFore.More()) {
+			pendingSegments.push_back(bfFore.Next());
+		}
+		return (k < pendingSegments.size()) ? &pendingSegments[k] : nullptr;
+	};
+	const bool mergeTabRuns = (phasesDraw != PhasesDraw::One) &&
+		(vsDraw.viewWhitespace == WhiteSpace::Invisible) &&
+		!model.hotspot.Valid() && !model.BidirectionalEnabled();
+	auto selectionForeAt = [&](Sci::Position iDocAt) -> bool {
+		InSelection inSel = vsDraw.selection.visible ? model.sel.CharacterInSelection(iDocAt) : InSelection::inNone;
+		if (FlagSet(vsDraw.caret.style, CaretStyle::Curses) && (inSel == InSelection::inMain))
+			inSel = CharacterInCursesSelection(iDocAt, model, vsDraw);
+		return SelectionForeground(model, vsDraw, inSel).has_value();
+	};
+	auto graphicASCII = [](std::string_view sv) noexcept -> bool {
+		return std::all_of(sv.begin(), sv.end(), [](char ch) noexcept { return ch >= ' ' && ch <= '~'; });
+	};
+	// LOCAL CHANGE: the text colour indicators give a segment, moved out of the
+	// loop so that tab-run merging can compare the segments of a run.
+	auto indicatorFore = [&](int segmentStart, ColourRGBA textFore) -> ColourRGBA {
+		if (vsDraw.indicatorsSetFore) {
+			// At least one indicator sets the text colour so see if it applies to this segment
+			for (const IDecoration *deco : model.pdoc->decorations->View()) {
+				const int indicatorValue = deco->ValueAt(segmentStart + posLineStart);
+				if (indicatorValue) {
+					const Indicator &indicator = vsDraw.indicators[deco->Indicator()];
+					bool hover = false;
+					if (indicator.IsDynamic()) {
+						const Sci::Position startPos = segmentStart + posLineStart;
+						const Range rangeRun(deco->StartRun(startPos), deco->EndRun(startPos));
+						hover =	rangeRun.ContainsCharacter(model.hoverIndicatorPos);
+					}
+					if (hover) {
+						if (indicator.sacHover.style == IndicatorStyle::TextFore || (indicator.sacHover.style == IndicatorStyle::ExplorerLink)) {
+							textFore = indicator.sacHover.fore;
+						}
+					} else {
+						if (indicator.sacNormal.style == IndicatorStyle::TextFore) {
+							if (FlagSet(indicator.Flags(), IndicFlag::ValueFore))
+								textFore = ColourRGBA::FromRGB(indicatorValue & static_cast<int>(IndicValue::Mask));
+							else
+								textFore = indicator.sacNormal.fore;
+						}
+					}
+				}
+			}
+		}
+		return textFore;
+	};
+	std::string mergedText;
 
-		const TextSegment ts = bfFore.Next();
+	while (!pendingSegments.empty() || bfFore.More()) {
+
+		// LOCAL CHANGE: take a read-ahead segment first.
+		TextSegment ts;
+		if (!pendingSegments.empty()) {
+			ts = pendingSegments.front();
+			pendingSegments.erase(pendingSegments.begin());
+		} else {
+			ts = bfFore.Next();
+		}
 		const Sci::Position i = ts.end() - 1;
 		const Sci::Position iDoc = i + posLineStart;
 
@@ -2167,37 +2267,13 @@ void EditView::DrawForeground(Surface *surface, const EditModel &model, const Vi
 					textFore = *colourHotSpot;
 				}
 			}
-			if (vsDraw.indicatorsSetFore) {
-				// At least one indicator sets the text colour so see if it applies to this segment
-				for (const IDecoration *deco : model.pdoc->decorations->View()) {
-					const int indicatorValue = deco->ValueAt(ts.start + posLineStart);
-					if (indicatorValue) {
-						const Indicator &indicator = vsDraw.indicators[deco->Indicator()];
-						bool hover = false;
-						if (indicator.IsDynamic()) {
-							const Sci::Position startPos = ts.start + posLineStart;
-							const Range rangeRun(deco->StartRun(startPos), deco->EndRun(startPos));
-							hover =	rangeRun.ContainsCharacter(model.hoverIndicatorPos);
-						}
-						if (hover) {
-							if (indicator.sacHover.style == IndicatorStyle::TextFore || (indicator.sacHover.style == IndicatorStyle::ExplorerLink)) {
-								textFore = indicator.sacHover.fore;
-							}
-						} else {
-							if (indicator.sacNormal.style == IndicatorStyle::TextFore) {
-								if (FlagSet(indicator.Flags(), IndicFlag::ValueFore))
-									textFore = ColourRGBA::FromRGB(indicatorValue & static_cast<int>(IndicValue::Mask));
-								else
-									textFore = indicator.sacNormal.fore;
-							}
-						}
-					}
-				}
-			}
+			textFore = indicatorFore(ts.start, textFore);	// LOCAL CHANGE: moved into indicatorFore.
+			const ColourRGBA textForeUnselected = textFore;	// LOCAL CHANGE: for tab-run merging.
 			InSelection inSelection = vsDraw.selection.visible ? model.sel.CharacterInSelection(iDoc) : InSelection::inNone;
 			if (FlagSet(vsDraw.caret.style, CaretStyle::Curses) && (inSelection == InSelection::inMain))
 				inSelection = CharacterInCursesSelection(iDoc, model, vsDraw);
-			if (const ColourOptional selectionFore = SelectionForeground(model, vsDraw, inSelection)) {
+			const ColourOptional selectionFore = SelectionForeground(model, vsDraw, inSelection);	// LOCAL CHANGE: kept for tab-run merging.
+			if (selectionFore) {
 				textFore = *selectionFore;
 			}
 			ColourRGBA textBack = TextBackground(model, vsDraw, ll, background, inSelection, inHotspot, styleMain, i);
@@ -2261,8 +2337,57 @@ void EditView::DrawForeground(Surface *surface, const EditModel &model, const Vi
 				if (vsDraw.styles[styleMain].visible) {
 					const std::string_view text(&ll->chars[ts.start], i - ts.start + 1);
 					if (phasesDraw != PhasesDraw::One) {
-						surface->DrawTextTransparent(rcSegment, textFont,
-							ybase, text, textFore);
+						// LOCAL CHANGE: tab-run merging, see mergeTabRuns.
+						std::string_view textDraw = text;
+						PRectangle rcDraw = rcSegment;
+						const Style &styleText = vsDraw.styles[styleMain];
+						if (mergeTabRuns && !selectionFore && styleText.monospaceASCII && !styleText.underline &&
+							(!inIndentation || (vsDraw.viewIndentationGuides == IndentView::None)) &&
+							graphicASCII(text)) {
+							const XYPOSITION widthChar = styleText.monospaceCharacterWidth;
+							const XYPOSITION xRun = ll->positions[ts.start];
+							int endRun = ts.end();
+							int segmentsMerged = 0;
+							mergedText.assign(text);
+							while (true) {
+								const TextSegment *tab = peekSegment(0);
+								const TextSegment *next = peekSegment(1);
+								if (!tab || !next)
+									break;
+								if (!tab->representation || (tab->length != 1) || (ll->chars[tab->start] != '\t') ||
+									(ll->styles[tab->start] != styleMain))
+									break;
+								if (next->representation || (ll->styles[next->start] != styleMain) ||
+									(ll->styles[next->end() - 1] != styleMain))
+									break;
+								if ((ll->positions[next->start] + horizontalOffset) > rcLine.right)
+									break;
+								const std::string_view textNext(&ll->chars[next->start], next->length);
+								if (!graphicASCII(textNext) || selectionForeAt(tab->start + posLineStart) ||
+									selectionForeAt(next->end() - 1 + posLineStart) ||
+									!(indicatorFore(next->start, styleText.fore) == textForeUnselected))
+									break;
+								const XYPOSITION widthTab = ll->positions[tab->end()] - ll->positions[tab->start];
+								const long spaces = std::lround(widthTab / widthChar);
+								if (spaces < 1)
+									break;
+								const XYPOSITION xExpected = widthChar * static_cast<XYPOSITION>(mergedText.length() + spaces);
+								if (std::abs((ll->positions[next->start] - xRun) - xExpected) > 1e-6)
+									break;
+								mergedText.append(spaces, ' ');
+								mergedText.append(textNext);
+								endRun = next->end();
+								segmentsMerged += 2;
+								pendingSegments.erase(pendingSegments.begin(), pendingSegments.begin() + 2);
+							}
+							if (segmentsMerged > 0) {
+								textDraw = mergedText;
+								rcDraw = rcLine.WithHorizontalBounds(
+									Interval{ rcSegment.left, ll->positions[endRun] + horizontalOffset });
+							}
+						}
+						surface->DrawTextTransparent(rcDraw, textFont,
+							ybase, textDraw, textFore);
 					} else {
 						surface->DrawTextNoClip(rcSegment, textFont,
 							ybase, text, textFore, textBack);
