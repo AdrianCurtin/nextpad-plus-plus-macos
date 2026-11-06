@@ -26,6 +26,40 @@
 #import "ScintillaView.h"
 #import "ScintillaCocoa.h"
 
+#import <QuartzCore/QuartzCore.h>
+
+// LOCAL CHANGE: rasterize the text view's layer in 8 bits per channel.
+// On macOS 26 and later AppKit keeps what -drawRect: draws as a display list
+// in a visible-rect-sized content sublayer of the view's layer, and Core
+// Animation rasterizes that list on the main thread during each transaction
+// commit. AppKit picks a half-float backing store for it (seen on the
+// built-in XDR panel and on SDR external displays alike), and filling it
+// costs about 0.7 ms per vertical scroll step and 12 ms per full repaint
+// (a horizontal scroll step) on the main thread. Scintilla draws no
+// extended-range colours, so an 8-bit store holds the same colours: the
+// same work takes about 0.25 ms and 2.7 ms. On screen the text area differs
+// from the half-float store only by rounding, at most 2/255 per channel.
+static Class SCIContentSublayerClass(CALayer *sub) {
+	static Class contentLayerClass = Nil;
+	if (contentLayerClass)
+		return [sub isMemberOfClass: contentLayerClass] ? contentLayerClass : Nil;
+	// The sublayer class is private to AppKit; match it by name once.
+	if ([NSStringFromClass([sub class]) containsString: @"NSViewBackingLayerContents"]) {
+		contentLayerClass = [sub class];
+		return contentLayerClass;
+	}
+	return Nil;
+}
+
+static void SCIUse8BitContentLayer(NSView *view) {
+	for (CALayer *sub in view.layer.sublayers) {
+		if ([sub.contentsFormat isEqualToString: kCAContentsFormatRGBA8Uint])
+			continue;
+		if (SCIContentSublayerClass(sub))
+			sub.contentsFormat = kCAContentsFormatRGBA8Uint;
+	}
+}
+
 #if !__has_feature(objc_arc)
 #error ARC must be enabled
 #endif
@@ -416,6 +450,10 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 			[self setNeedsDisplay: YES];
 		});
 	}
+	// LOCAL CHANGE: 8-bit text layer (see SCIUse8BitContentLayer). The
+	// sublayer exists once AppKit has displayed the view and can be replaced
+	// later, so check after every paint; the check is a string compare.
+	SCIUse8BitContentLayer(self);
 }
 
 //--------------------------------------------------------------------------------------------------
