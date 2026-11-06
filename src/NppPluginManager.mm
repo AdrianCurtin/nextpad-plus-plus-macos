@@ -8,6 +8,7 @@
 #import "TabManager.h"
 #import "EditorView.h"
 #import "ScintillaView.h"
+#import "NppPerfDiagnostics.h"
 
 #include <dlfcn.h>
 #include <malloc/malloc.h>
@@ -453,6 +454,7 @@ static NSArray<EditorView *> *nppAllEditors(MainWindowController *mwc, int filte
         if (code == SCN_PAINTED  && !pi->wantsPainted)  continue;
 
         @try {
+            NPP_PERF_SCOPE("Plugins.beNotified", "%{public}s code=%u", pi->displayName.c_str(), code);
             pi->pBeNotified(&copy);
         } @catch (NSException *e) {
             NSLog(@"[Plugins] \"%s\" crashed in beNotified (SCN code=%u): %@",

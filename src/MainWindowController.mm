@@ -42,6 +42,7 @@
 #import "NppThemeManager.h"
 #import "NppModelXmlMerge.h"
 #import "NppLocalizer.h"
+#import "NppPerfDiagnostics.h"
 #import <objc/runtime.h>
 #include <sys/sysctl.h>
 #include <sys/resource.h>
@@ -4993,6 +4994,7 @@ static void removeMacroFromShortcutsXML(NSString *name) {
 /// Periodically write all modified editors to ~/Library/Application Support/Nextpad++/backup/ — never to the original file.
 /// Backs up both named and untitled files so unsaved changes survive a crash.
 - (void)autoSaveTick:(NSTimer *)t {
+    NPP_PERF_SCOPE("MainWindowController.autoSaveTick");
     ensureNppDirs();
     NSString *backupDir = nppBackupDir();
     NSArray *managers = @[_tabManager, _subTabManagerH, _subTabManagerV];
@@ -7984,6 +7986,8 @@ static NSArray<NSDictionary *> *convertRecordedToXmlFormat(NSArray<NSDictionary 
 }
 
 - (void)_pollScrollSync:(NSTimer *)t {
+    // 60 Hz while synchronized scrolling is on.
+    NPP_PERF_SCOPE_FINE("MainWindowController.pollScrollSync");
     EditorView *primary = _tabManager.currentEditor;
     EditorView *secondary = nil;
     if (_subTabManagerV.allEditors.count > 0)
@@ -8660,6 +8664,8 @@ static NSArray<NSDictionary *> *convertRecordedToXmlFormat(NSArray<NSDictionary 
 #pragma mark - Cursor notification
 
 - (void)editorCursorMoved:(NSNotification *)note {
+    // Runs for every SCN_UPDATEUI, including each scroll step.
+    NPP_PERF_SCOPE("MainWindowController.editorCursorMoved");
     EditorView *ed = note.object;
     if (ed == [self currentEditor]) {
         [self updateStatusBar];
@@ -11320,6 +11326,7 @@ static int64_t _sysctlInt(const char *name) {
 #pragma mark - Helpers
 
 - (void)updateTitle {
+    NPP_PERF_SCOPE("MainWindowController.updateTitle");
     EditorView *ed = [self currentEditor];
     NSString *name;
     if (!ed) {
@@ -11437,6 +11444,7 @@ static NSString *languageDisplayName(NSString *langCode) {
 }
 
 - (void)updateStatusBar {
+    NPP_PERF_SCOPE("MainWindowController.updateStatusBar");
     // The status text follows the editor zoom (#305). This runs for every
     // SCN_UPDATEUI, and setting a field's font re-lays it out even when the
     // font is the same, so apply the size only when the zoom changes it.
@@ -11469,11 +11477,11 @@ static NSString *languageDisplayName(NSString *langCode) {
     if (![_statusLeftText isEqualToString:left]) {
         _statusLeft.stringValue = left;
         _statusLeftText = left;
-    }
+    } else NPP_PERF_COUNT("MainWindowController.updateStatusBar.leftUnchanged");
     if (![_statusRightText isEqualToString:right]) {
         _statusRight.stringValue = right;
         _statusRightText = right;
-    }
+    } else NPP_PERF_COUNT("MainWindowController.updateStatusBar.rightUnchanged");
 }
 
 // Issue #174: double-click on the language token (the leftmost segment of the
@@ -11554,14 +11562,17 @@ static NSString *languageDisplayName(NSString *langCode) {
 /// this method.
 - (void)refreshTabsForEditor:(EditorView *)editor {
     if (!editor) return;
+    NPP_PERF_SCOPE("MainWindowController.refreshTabsForEditor");
     EditorView *sibling = editor.cloneSibling;
     for (TabManager *mgr in @[_tabManager, _subTabManagerH, _subTabManagerV]) {
         [mgr refreshTitleForEditor:editor];
         if (sibling) [mgr refreshTitleForEditor:sibling];
     }
     [self updateTitle];
-    if (_docListPanel && [_sidePanelHost hasPanel:_docListPanel])
+    if (_docListPanel && [_sidePanelHost hasPanel:_docListPanel]) {
+        NPP_PERF_SCOPE("MainWindowController.docListRefresh");
         [_docListPanel refreshModifiedStates];
+    }
 }
 
 - (void)refreshCurrentTab {
