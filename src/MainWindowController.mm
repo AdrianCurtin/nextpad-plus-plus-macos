@@ -1980,6 +1980,12 @@ static void _nppTahoeRoundEditorCard(NSView *container, NSView *content) {
     NSLayoutConstraint *_statusHeight;
     NSTextField      *_statusLeft;
     NSTextField      *_statusRight;
+    // Text last assigned to _statusLeft/_statusRight by updateStatusBar.
+    // Compared instead of reading stringValue back, which costs more than
+    // the comparison saves (NSControl validates and copies on every read).
+    NSString         *_statusLeftText;
+    NSString         *_statusRightText;
+    CGFloat           _statusFontSize;   // status text size last applied (follows zoom)
     NSTextField      *_gitBranchLabel;
     NSLayoutConstraint *_findPanelHeightConstraint;
     // Issue #183 — primary tab bar height constraints for the "Hide tab bar"
@@ -11323,7 +11329,10 @@ static int64_t _sysctlInt(const char *name) {
     } else {
         name = ed.displayName;
     }
-    self.window.title = ed.isModified ? [name stringByAppendingString:@" •"] : name;
+    NSString *title = ed.isModified ? [name stringByAppendingString:@" •"] : name;
+    // Runs for every SCN_UPDATEUI (each scroll frame): skip an unchanged title.
+    if ([self.window.title isEqualToString:title]) return;
+    self.window.title = title;
 }
 
 /// Language display name mapping matching Windows NPP _langNameInfoArray._longName
@@ -11428,21 +11437,43 @@ static NSString *languageDisplayName(NSString *langCode) {
 }
 
 - (void)updateStatusBar {
+    // The status text follows the editor zoom (#305). This runs for every
+    // SCN_UPDATEUI, and setting a field's font re-lays it out even when the
+    // font is the same, so apply the size only when the zoom changes it.
     CGFloat statusSize = MAX(9.0, MIN(32.0, 11.0 + [self currentEditor].zoomLevel));
-    for (NSTextField *label in @[_statusLeft, _statusRight, _gitBranchLabel]) {
-        label.font = [NSFont monospacedDigitSystemFontOfSize:statusSize weight:NSFontWeightRegular];
-        label.textColor = NSColor.labelColor;
+    if (statusSize != _statusFontSize) {
+        _statusFontSize = statusSize;
+        for (NSTextField *label in @[_statusLeft, _statusRight, _gitBranchLabel]) {
+            label.font = [NSFont monospacedDigitSystemFontOfSize:statusSize weight:NSFontWeightRegular];
+            label.textColor = NSColor.labelColor;
+        }
+        _statusHeight.constant = MAX(22.0, ceil(statusSize + 10.0));
     }
-    _statusHeight.constant = MAX(22.0, ceil(statusSize + 10.0));
     EditorView *ed = [self currentEditor];
-    if (!ed) { _statusLeft.stringValue = _statusRight.stringValue = @""; return; }
+    if (!ed) {
+        _statusLeft.stringValue = _statusRight.stringValue = @"";
+        _statusLeftText = _statusRightText = @"";
+        return;
+    }
     sptr_t docLength = [ed.scintillaView message:SCI_GETLENGTH wParam:0 lParam:0];
-    _statusLeft.stringValue  = [NSString stringWithFormat:@"Ln %ld, Col %ld  |  Length: %ld  |  Lines: %ld  |  Zoom: %ld%%",
-                                 (long)ed.cursorLine, (long)ed.cursorColumn, (long)docLength, (long)ed.lineCount, (long)ed.zoomPercentage];
+    NSString *left = [NSString stringWithFormat:@"Ln %ld, Col %ld  |  Length: %ld  |  Lines: %ld  |  Zoom: %ld%%",
+                      (long)ed.cursorLine, (long)ed.cursorColumn, (long)docLength, (long)ed.lineCount, (long)ed.zoomPercentage];
     NSString *lang = languageDisplayName(ed.currentLanguage);
     NSString *mode = ed.isOverwriteMode ? @"OVR" : @"INS";
-    _statusRight.stringValue = [NSString stringWithFormat:@"%@  |  %@  |  %@  |  %@",
-                                 lang, ed.encodingName, ed.eolName, mode];
+    NSString *right = [NSString stringWithFormat:@"%@  |  %@  |  %@  |  %@",
+                       lang, ed.encodingName, ed.eolName, mode];
+    // Runs for every SCN_UPDATEUI (each scroll frame). Setting a text field's
+    // string invalidates and re-lays it out even when the text is the same,
+    // so only assign changed text. This method is the only writer of both
+    // fields, so the cached copies match what they show.
+    if (![_statusLeftText isEqualToString:left]) {
+        _statusLeft.stringValue = left;
+        _statusLeftText = left;
+    }
+    if (![_statusRightText isEqualToString:right]) {
+        _statusRight.stringValue = right;
+        _statusRightText = right;
+    }
 }
 
 // Issue #174: double-click on the language token (the leftmost segment of the

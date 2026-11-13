@@ -138,6 +138,7 @@ set(APP_SRCS
     src/SearchCore.mm
     src/SearchEngine.mm
     src/NppTextEncoding.mm
+    src/NppClickableLinks.mm
     src/NPPBatchRunner.mm
     src/NPPBatchDialog.mm
     src/SearchResultsPanel.mm
@@ -184,6 +185,7 @@ set(APP_HEADERS
     src/SearchCore.h
     src/SearchEngine.h
     src/NppTextEncoding.h
+    src/NppClickableLinks.h
     src/SearchResultsPanel.h
     src/FindWindow.h
     src/StyleConfiguratorWindowController.h
@@ -540,6 +542,11 @@ set_source_files_properties(${APP_SRCS} PROPERTIES
 #                         CoreText line layout: positions, widths and pixels must be
 #                         identical, for fonts on the ASCII fast path and off it.
 #                         Links AppKit but draws only into memory
+#   clickable_links       tests/test_clickable_links.mm: clickable-link detection
+#                         (src/NppClickableLinks.mm): a block of lines gives the
+#                         same links as each line scanned alone, also after text
+#                         that stops NSDataDetector; byte offsets, line ends,
+#                         numeric-line skip. Foundation only
 #   regex_run_sh,         the standalone harness scripts (regex/test/run.sh and
 #   regex_run_boost_sh    run_boost.sh), which build their own copy with clang++;
 #                         label "standalone" (ctest -LE standalone skips them)
@@ -587,14 +594,23 @@ if(NPP_BUILD_TESTS)
     target_compile_definitions(test_platcocoa_text PRIVATE ${SCI_DEFINITIONS})
     target_compile_options(test_platcocoa_text PRIVATE -fobjc-arc)
 
+    add_executable(test_clickable_links EXCLUDE_FROM_ALL
+        "${NPP_TEST_ROOT}/test_clickable_links.mm"
+        src/NppClickableLinks.mm)
+    target_include_directories(test_clickable_links PRIVATE src)
+    target_compile_options(test_clickable_links PRIVATE -fobjc-arc)
+    target_link_libraries(test_clickable_links PRIVATE "-framework Foundation")
+
     add_custom_target(npp_tests
-        DEPENDS test_npp_regex test_boost_regex test_buffer_search test_search_core test_platcocoa_text)
+        DEPENDS test_npp_regex test_boost_regex test_buffer_search test_search_core test_platcocoa_text
+                test_clickable_links)
 
     add_test(NAME regex_editor_engine COMMAND test_npp_regex)
     add_test(NAME regex_boost_backend COMMAND test_boost_regex)
     add_test(NAME buffer_search COMMAND test_buffer_search)
     add_test(NAME search_core COMMAND test_search_core)
     add_test(NAME platcocoa_text COMMAND test_platcocoa_text)
+    add_test(NAME clickable_links COMMAND test_clickable_links)
     add_test(NAME regex_run_sh COMMAND bash "${NPP_REGEX_ROOT}/test/run.sh")
     add_test(NAME regex_run_boost_sh COMMAND bash "${NPP_REGEX_ROOT}/test/run_boost.sh")
     set_tests_properties(regex_run_sh regex_run_boost_sh PROPERTIES LABELS standalone TIMEOUT 600)
