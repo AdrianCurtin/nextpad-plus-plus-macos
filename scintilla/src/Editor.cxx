@@ -74,6 +74,21 @@ using namespace Scintilla::Internal;
 
 namespace {
 
+// LOCAL CHANGE: true when two indicators draw the same way. The indicator
+// setters below compare against this so that re-applying an unchanged value
+// does not invalidate every layout and the position cache. Nextpad++
+// re-applies its clickable-link indicator on every SCN_UPDATEUI, which made
+// each scroll frame clear both caches and lay out every visible line again.
+bool SameIndicator(const Indicator &a, const Indicator &b) noexcept {
+	return (a.sacNormal == b.sacNormal) &&
+		(a.sacHover == b.sacHover) &&
+		(a.under == b.under) &&
+		(a.fillAlpha == b.fillAlpha) &&
+		(a.outlineAlpha == b.outlineAlpha) &&
+		(a.Flags() == b.Flags()) &&
+		(a.strokeWidth == b.strokeWidth);
+}
+
 /*
 	return whether this modification represents an operation that
 	may reasonably be deferred (not done now OR [possibly] at all)
@@ -8109,9 +8124,11 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 
 	case Message::IndicSetStyle:
 		if (wParam <= IndicatorMax) {
+			const Indicator previous = vs.indicators[wParam];	// LOCAL CHANGE: see SameIndicator.
 			vs.indicators[wParam].sacNormal.style = static_cast<IndicatorStyle>(lParam);
 			vs.indicators[wParam].sacHover.style = static_cast<IndicatorStyle>(lParam);
-			InvalidateStyleRedraw();
+			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
+				InvalidateStyleRedraw();
 		}
 		break;
 
@@ -8121,9 +8138,11 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 
 	case Message::IndicSetFore:
 		if (wParam <= IndicatorMax) {
+			const Indicator previous = vs.indicators[wParam];	// LOCAL CHANGE: see SameIndicator.
 			vs.indicators[wParam].sacNormal.fore = ColourRGBA::FromIpRGB(lParam);
 			vs.indicators[wParam].sacHover.fore = ColourRGBA::FromIpRGB(lParam);
-			InvalidateStyleRedraw();
+			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
+				InvalidateStyleRedraw();
 		}
 		break;
 
@@ -8133,8 +8152,10 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 
 	case Message::IndicSetHoverStyle:
 		if (wParam <= IndicatorMax) {
+			const Indicator previous = vs.indicators[wParam];	// LOCAL CHANGE: see SameIndicator.
 			vs.indicators[wParam].sacHover.style = static_cast<IndicatorStyle>(lParam);
-			InvalidateStyleRedraw();
+			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
+				InvalidateStyleRedraw();
 		}
 		break;
 
@@ -8144,8 +8165,10 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 
 	case Message::IndicSetHoverFore:
 		if (wParam <= IndicatorMax) {
+			const Indicator previous = vs.indicators[wParam];	// LOCAL CHANGE: see SameIndicator.
 			vs.indicators[wParam].sacHover.fore = ColourRGBA::FromIpRGB(lParam);
-			InvalidateStyleRedraw();
+			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
+				InvalidateStyleRedraw();
 		}
 		break;
 
@@ -8155,8 +8178,10 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 
 	case Message::IndicSetFlags:
 		if (wParam <= IndicatorMax) {
+			const Indicator previous = vs.indicators[wParam];	// LOCAL CHANGE: see SameIndicator.
 			vs.indicators[wParam].SetFlags(static_cast<IndicFlag>(lParam));
-			InvalidateStyleRedraw();
+			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
+				InvalidateStyleRedraw();
 		}
 		break;
 
@@ -8166,8 +8191,10 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 
 	case Message::IndicSetUnder:
 		if (wParam <= IndicatorMax) {
+			const Indicator previous = vs.indicators[wParam];	// LOCAL CHANGE: see SameIndicator.
 			vs.indicators[wParam].under = lParam != 0;
-			InvalidateStyleRedraw();
+			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
+				InvalidateStyleRedraw();
 		}
 		break;
 
@@ -8177,8 +8204,10 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 
 	case Message::IndicSetAlpha:
 		if (wParam <= IndicatorMax && lParam >=0 && lParam <= 255) {
+			const Indicator previous = vs.indicators[wParam];	// LOCAL CHANGE: see SameIndicator.
 			vs.indicators[wParam].fillAlpha = static_cast<int>(lParam);
-			InvalidateStyleRedraw();
+			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
+				InvalidateStyleRedraw();
 		}
 		break;
 
@@ -8188,8 +8217,10 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 
 	case Message::IndicSetOutlineAlpha:
 		if (wParam <= IndicatorMax && lParam >=0 && lParam <= 255) {
+			const Indicator previous = vs.indicators[wParam];	// LOCAL CHANGE: see SameIndicator.
 			vs.indicators[wParam].outlineAlpha = static_cast<int>(lParam);
-			InvalidateStyleRedraw();
+			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
+				InvalidateStyleRedraw();
 		}
 		break;
 
@@ -8198,8 +8229,10 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
 
 	case Message::IndicSetStrokeWidth:
 		if (wParam <= IndicatorMax && lParam >= 0 && lParam <= 1000) {
+			const Indicator previous = vs.indicators[wParam];	// LOCAL CHANGE: see SameIndicator.
 			vs.indicators[wParam].strokeWidth = static_cast<XYPOSITION>(lParam) / 100.0;
-			InvalidateStyleRedraw();
+			if (!SameIndicator(previous, vs.indicators[wParam]))	// LOCAL CHANGE
+				InvalidateStyleRedraw();
 		}
 		break;
 

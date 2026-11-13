@@ -19,7 +19,12 @@ struct FontSpecification {
 	bool italic = false;
 	Scintilla::CharacterSet characterSet = Scintilla::CharacterSet::Default;
 	Scintilla::FontQuality extraFontFlag = Scintilla::FontQuality::QualityDefault;
-	bool checkMonospaced = false;
+	// LOCAL CHANGE: check every style for a monospaced ASCII font by default.
+	// ViewStyle::Refresh measures the printable ASCII range and only enables
+	// the fast path when all widths agree, so proportional fonts are
+	// unaffected. With Menlo this replaces a CoreText measurement of every
+	// ASCII text segment with a multiplication. Upstream default: false.
+	bool checkMonospaced = true;
 
 	constexpr FontSpecification(const char *fontName_=nullptr, int size_=10*Scintilla::FontSizeMultiplier) noexcept :
 		fontName(fontName_), size(size_) {
