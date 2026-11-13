@@ -1985,6 +1985,7 @@ static void _nppTahoeRoundEditorCard(NSView *container, NSView *content) {
     // the comparison saves (NSControl validates and copies on every read).
     NSString         *_statusLeftText;
     NSString         *_statusRightText;
+    CGFloat           _statusFontSize;   // status text size last applied (follows zoom)
     NSTextField      *_gitBranchLabel;
     NSLayoutConstraint *_findPanelHeightConstraint;
     // Issue #183 — primary tab bar height constraints for the "Hide tab bar"
@@ -11436,12 +11437,18 @@ static NSString *languageDisplayName(NSString *langCode) {
 }
 
 - (void)updateStatusBar {
+    // The status text follows the editor zoom (#305). This runs for every
+    // SCN_UPDATEUI, and setting a field's font re-lays it out even when the
+    // font is the same, so apply the size only when the zoom changes it.
     CGFloat statusSize = MAX(9.0, MIN(32.0, 11.0 + [self currentEditor].zoomLevel));
-    for (NSTextField *label in @[_statusLeft, _statusRight, _gitBranchLabel]) {
-        label.font = [NSFont monospacedDigitSystemFontOfSize:statusSize weight:NSFontWeightRegular];
-        label.textColor = NSColor.labelColor;
+    if (statusSize != _statusFontSize) {
+        _statusFontSize = statusSize;
+        for (NSTextField *label in @[_statusLeft, _statusRight, _gitBranchLabel]) {
+            label.font = [NSFont monospacedDigitSystemFontOfSize:statusSize weight:NSFontWeightRegular];
+            label.textColor = NSColor.labelColor;
+        }
+        _statusHeight.constant = MAX(22.0, ceil(statusSize + 10.0));
     }
-    _statusHeight.constant = MAX(22.0, ceil(statusSize + 10.0));
     EditorView *ed = [self currentEditor];
     if (!ed) {
         _statusLeft.stringValue = _statusRight.stringValue = @"";
