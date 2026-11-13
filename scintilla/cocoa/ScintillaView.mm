@@ -26,6 +26,40 @@
 #import "ScintillaView.h"
 #import "ScintillaCocoa.h"
 
+#import <QuartzCore/QuartzCore.h>
+
+// LOCAL CHANGE: rasterize the text view's layer in 8 bits per channel.
+// On macOS 26 and later AppKit keeps what -drawRect: draws as a display list
+// in a visible-rect-sized content sublayer of the view's layer, and Core
+// Animation rasterizes that list on the main thread during each transaction
+// commit. AppKit picks a half-float backing store for it (seen on the
+// built-in XDR panel and on SDR external displays alike), and filling it
+// costs about 0.7 ms per vertical scroll step and 12 ms per full repaint
+// (a horizontal scroll step) on the main thread. Scintilla draws no
+// extended-range colours, so an 8-bit store holds the same colours: the
+// same work takes about 0.25 ms and 2.7 ms. On screen the text area differs
+// from the half-float store only by rounding, at most 2/255 per channel.
+static Class SCIContentSublayerClass(CALayer *sub) {
+	static Class contentLayerClass = Nil;
+	if (contentLayerClass)
+		return [sub isMemberOfClass: contentLayerClass] ? contentLayerClass : Nil;
+	// The sublayer class is private to AppKit; match it by name once.
+	if ([NSStringFromClass([sub class]) containsString: @"NSViewBackingLayerContents"]) {
+		contentLayerClass = [sub class];
+		return contentLayerClass;
+	}
+	return Nil;
+}
+
+static void SCIUse8BitContentLayer(NSView *view) {
+	for (CALayer *sub in view.layer.sublayers) {
+		if ([sub.contentsFormat isEqualToString: kCAContentsFormatRGBA8Uint])
+			continue;
+		if (SCIContentSublayerClass(sub))
+			sub.contentsFormat = kCAContentsFormatRGBA8Uint;
+	}
+}
+
 #if !__has_feature(objc_arc)
 #error ARC must be enabled
 #endif
@@ -68,7 +102,30 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 	}
 }
 
+// Add marginWidth and owner properties as a private category.
+@interface SCIMarginView()
+@property(assign) int marginWidth;
+@property(nonatomic, weak) ScintillaView *owner;
+// LOCAL CHANGE: set while NSScrollView reflects a clip view scroll (see
+// -[SCIMarginView setNeedsDisplayInRect:]).
+@property(nonatomic) BOOL reflectingScroll;
+@end
+
 @implementation SCIScrollView
+
+/**
+ * LOCAL CHANGE: NSScrollView invalidates the whole vertical ruler on every
+ * scroll, horizontal ones included. Flag the margin while it does so that the
+ * margin can drop the request when its vertical position has not changed.
+ */
+- (void) reflectScrolledClipView: (NSClipView *) cView {
+	SCIMarginView *margin = [self.verticalRulerView isKindOfClass: [SCIMarginView class]] ?
+		static_cast<SCIMarginView *>(self.verticalRulerView) : nil;
+	margin.reflectingScroll = YES;
+	[super reflectScrolledClipView: cView];
+	margin.reflectingScroll = NO;
+}
+
 - (void) tile {
 	[super tile];
 
@@ -97,16 +154,13 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 }
 @end
 
-// Add marginWidth and owner properties as a private category.
-@interface SCIMarginView()
-@property(assign) int marginWidth;
-@property(nonatomic, weak) ScintillaView *owner;
-@end
-
 @implementation SCIMarginView {
 	int marginWidth;
 	ScintillaView *__weak owner;
 	NSMutableArray *currentCursors;
+	// LOCAL CHANGE: clip view bounds at the last margin paint.
+	BOOL mPainted;
+	NSRect mPaintedClipBounds;
 }
 
 @synthesize marginWidth, owner;
@@ -229,7 +283,29 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 	}
 }
 
+/**
+ * LOCAL CHANGE: the margin shows the lines from the clip view's vertical
+ * position down, so a scroll that leaves that position and the clip height
+ * unchanged (a horizontal scroll) does not change it. Drop the full-margin
+ * invalidation NSScrollView sends for such a scroll; it repainted every line
+ * number on every horizontal scroll step. Invalidations from Scintilla
+ * (markers, folds, styles, Redraw) and from AppKit outside a scroll are kept.
+ */
+- (void) setNeedsDisplayInRect: (NSRect) invalidRect {
+	if (_reflectingScroll && mPainted) {
+		const NSRect clip = self.scrollView.contentView.bounds;
+		if (clip.origin.y == mPaintedClipBounds.origin.y &&
+		    clip.size.height == mPaintedClipBounds.size.height) {
+			return;
+		}
+	}
+	[super setNeedsDisplayInRect: invalidRect];
+}
+
 - (void) drawRect: (NSRect) rect {
+	// LOCAL CHANGE: remember the vertical position this paint shows.
+	mPainted = YES;
+	mPaintedClipBounds = self.scrollView.contentView.bounds;
 	if (!NSContainsRect(self.bounds, rect)) {
 	    rect = self.bounds;
 	}
@@ -416,6 +492,10 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 			[self setNeedsDisplay: YES];
 		});
 	}
+	// LOCAL CHANGE: 8-bit text layer (see SCIUse8BitContentLayer). The
+	// sublayer exists once AppKit has displayed the view and can be replaced
+	// later, so check after every paint; the check is a string compare.
+	SCIUse8BitContentLayer(self);
 }
 
 //--------------------------------------------------------------------------------------------------
